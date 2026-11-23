@@ -167,7 +167,7 @@ function isHighImpactSegment(rawSegment: string, depth: number): boolean {
 }
 
 const LINE_SEPARATORS = new Set([";", "|", "&"]);
-const HEREDOC_AT_POS = /^<<(-)?[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([^\s;|&()<>'"]+))/u;
+const HEREDOC_AT_POS = /^<<(-)?[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][A-Za-z0-9_.-]*))/u;
 
 type QuoteChar = "'" | '"' | null;
 
@@ -223,16 +223,6 @@ function isCommentStart(line: string, index: number): boolean {
   return index === 0 || /[\s;|&()]/u.test(line[index - 1] ?? "");
 }
 
-function updateArithDepth(line: string, index: number, depth: number): number {
-  if (line.startsWith("$((", index)) {
-    return depth + 1;
-  }
-  if (depth > 0 && line.startsWith("))", index)) {
-    return depth - 1;
-  }
-  return depth;
-}
-
 function parseHeredocOpener(line: string, index: number): HeredocOpener | undefined {
   if (!line.startsWith("<<", index) || line[index - 1] === "<" || line[index + 2] === "<") {
     return undefined;
@@ -242,10 +232,9 @@ function parseHeredocOpener(line: string, index: number): HeredocOpener | undefi
     return undefined;
   }
   const delimiter = match[2] ?? match[3] ?? match[4];
-  if (delimiter === undefined) {
-    return undefined;
-  }
-  return { delimiter, stripTabs: match[1] === "-", end: index + match[0].length };
+  return delimiter === undefined
+    ? undefined
+    : { delimiter, stripTabs: match[1] === "-", end: index + match[0].length };
 }
 
 function segmentIsShell(rawSegment: string): boolean {
@@ -267,7 +256,8 @@ function isHeredocClosingLine(rawLine: string, heredoc: PendingHeredoc): boolean
  */
 class ShellLineScanner {
   private scanState: LineScanState = { quote: null, escaped: false, inside: false };
-  private arithDepth = 0;
+  private arithParen = 0;
+  private arithBracket = 0;
   private current = "";
   private segmentOpeners: HeredocOpener[] = [];
   private readonly segments: string[] = [];
@@ -346,6 +336,30 @@ class ShellLineScanner {
     }
   }
 
+  private stepArith(line: string, i: number): number {
+    if (line.startsWith("((", i)) {
+      this.arithParen += 1;
+      this.current += "((";
+      return i + 2;
+    }
+    if (this.arithParen > 0 && line.startsWith("))", i)) {
+      this.arithParen -= 1;
+      this.current += "))";
+      return i + 2;
+    }
+    if (line.startsWith("$[", i)) {
+      this.arithBracket += 1;
+      this.current += "$[";
+      return i + 2;
+    }
+    if (this.arithBracket > 0 && line[i] === "]") {
+      this.arithBracket -= 1;
+      this.current += "]";
+      return i + 1;
+    }
+    return -1;
+  }
+
   private stepChar(line: string, i: number): number {
     const ch = line[i] ?? "";
     this.scanState = advanceScanState(ch, this.scanState);
@@ -357,8 +371,12 @@ class ShellLineScanner {
       this.flushSegment();
       return -1;
     }
-    this.arithDepth = updateArithDepth(line, i, this.arithDepth);
-    const opener = this.arithDepth === 0 ? parseHeredocOpener(line, i) : undefined;
+    const arithNext = this.stepArith(line, i);
+    if (arithNext >= 0) {
+      return arithNext;
+    }
+    const inArith = this.arithParen > 0 || this.arithBracket > 0;
+    const opener = inArith ? undefined : parseHeredocOpener(line, i);
     if (opener !== undefined) {
       this.segmentOpeners.push(opener);
       this.current += line.slice(i, opener.end);
