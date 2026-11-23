@@ -144,6 +144,7 @@ export const judgeCheckpointSchema = Type.Union([
     blockingCount: Type.Integer({ minimum: 0 }),
     noteCount: Type.Integer({ minimum: 0 }),
     droppedUngrounded: Type.Integer({ minimum: 0 }),
+    truncated: Type.Optional(Type.Boolean()),
   }),
   Type.Object({
     ...judgeCheckpointFields,

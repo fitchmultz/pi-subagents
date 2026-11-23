@@ -1,15 +1,19 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { ToolCall } from "@earendil-works/pi-ai";
 import type { TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import {
   judgeCheckpointsSchema,
+  judgeUnavailableSchema,
   type Escalation,
   type JudgeCheckpoint,
+  type JudgeCheckpoints,
+  type JudgeUnavailable,
   type SkepticFinding,
   type ToolErrorTurn,
 } from "./contracts.ts";
-import { read, runDirectory } from "./storage.ts";
-import * as path from "node:path";
+import { read, runDirectory, write } from "./storage.ts";
 
 const CONSECUTIVE_ERROR_TURN_LIMIT = 3;
 
@@ -109,11 +113,13 @@ export function checkpointEvidenceLines(escalation: Escalation): string[] {
 
 const singleLine = (text: string): string => text.replaceAll(/\s+/gu, " ").trim();
 
+const formatFailedCandidates = (failed: JudgeCheckpoint["failed"]): string =>
+  failed === undefined || failed.length === 0
+    ? ""
+    : `failed: ${failed.map((f) => `${f.model}: ${singleLine(f.reason)}`).join("; ")}`;
+
 function formatCheckpointEntry(entry: JudgeCheckpoint): string {
-  const failed =
-    entry.failed === undefined || entry.failed.length === 0
-      ? ""
-      : `failed: ${entry.failed.map((f) => `${f.model}: ${singleLine(f.reason)}`).join("; ")}`;
+  const failed = formatFailedCandidates(entry.failed);
   if (entry.outcome === "unavailable") {
     const detail = [entry.error === undefined ? "" : singleLine(entry.error), failed]
       .filter(Boolean)
@@ -124,6 +130,7 @@ function formatCheckpointEntry(entry: JudgeCheckpoint): string {
     entry.blockingCount > 0 ? `${entry.blockingCount} blocking` : "",
     entry.noteCount > 0 ? `${entry.noteCount} note` : "",
     entry.droppedUngrounded > 0 ? `${entry.droppedUngrounded} ungrounded dropped` : "",
+    entry.truncated === true ? "diff truncated to model context window" : "",
   ]
     .filter(Boolean)
     .join(", ");
@@ -133,14 +140,45 @@ function formatCheckpointEntry(entry: JudgeCheckpoint): string {
     : `${entry.outcome} via ${entry.model} (${meta})`;
 }
 
+const judgeUnavailableFile = (base: string, runId: string): string =>
+  path.join(runDirectory(base, runId), "judge-unavailable.json");
+const judgeCheckpointsFile = (base: string, runId: string): string =>
+  path.join(runDirectory(base, runId), "judge-checkpoints.json");
+
+export const judgeUnavailable = (base: string, runId: string): JudgeUnavailable | undefined =>
+  read(judgeUnavailableFile(base, runId), judgeUnavailableSchema);
+
+export function recordJudgeUnavailable(base: string, runId: string, summary: string): void {
+  write(judgeUnavailableFile(base, runId), { at: Date.now(), summary });
+}
+
+export function clearJudgeUnavailable(base: string, runId: string): void {
+  fs.rmSync(judgeUnavailableFile(base, runId), { force: true });
+}
+
+export function readJudgeCheckpoints(base: string, runId: string): JudgeCheckpoint[] {
+  return read(judgeCheckpointsFile(base, runId), judgeCheckpointsSchema)?.checkpoints ?? [];
+}
+
+export function recordJudgeCheckpoint(
+  base: string,
+  runId: string,
+  checkpoint: JudgeCheckpoint,
+): JudgeCheckpoint {
+  const next: JudgeCheckpoints = {
+    version: 1,
+    checkpoints: [...readJudgeCheckpoints(base, runId), checkpoint],
+  };
+  write(judgeCheckpointsFile(base, runId), next);
+  return checkpoint;
+}
+
 export function inspectJudgeCheckpoints(
   base: string,
   runId: string,
   formatTime: (at: number) => string,
 ): { readonly checkpoints?: JudgeCheckpoint[]; readonly lines: string[] } {
-  const all =
-    read(path.join(runDirectory(base, runId), "judge-checkpoints.json"), judgeCheckpointsSchema)
-      ?.checkpoints ?? [];
+  const all = readJudgeCheckpoints(base, runId);
   if (all.length === 0) {
     return { lines: [] };
   }

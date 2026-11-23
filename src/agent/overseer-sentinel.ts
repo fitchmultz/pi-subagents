@@ -22,15 +22,17 @@ import {
   type TreeDelta,
   type TreeSnapshot,
 } from "./overseer-diff.ts";
-import { ToolErrorWindow } from "./overseer-evidence.ts";
+import {
+  clearJudgeUnavailable,
+  recordJudgeCheckpoint,
+  recordJudgeUnavailable,
+  ToolErrorWindow,
+} from "./overseer-evidence.ts";
 import { checkpointGuidance } from "./overseer-guidance.ts";
 import { EscalationPause, type EscalationAnswer, type SteerCommand } from "./overseer-pause.ts";
 import {
-  clearJudgeUnavailable,
   evaluateLiveSkeptic,
   isJudgeDisabled,
-  recordJudgeCheckpoint,
-  recordJudgeUnavailable,
   type LiveSkepticOutcome,
 } from "./overseer-skeptic.ts";
 import { activeOverseer } from "./overseer.ts";
@@ -45,8 +47,6 @@ const MUTATING_TOOLS = new Set([
   "apply_patch",
   "bash",
 ]);
-const SHAPE_CHECK_LINES = 40;
-const SHAPE_CHECK_FILES = 2;
 const SKEPTIC_TURN_INTERVAL = 4;
 const SKEPTIC_DIFF_DELTA = 120;
 const ESCALATION_EXCERPT_CHARS = 3000;
@@ -104,10 +104,7 @@ function appendOverseerNote(base: string, note: OverseerNote): void {
 }
 
 const shouldTriggerShapeCheck = (state: RunSentinelState, delta: TreeDelta): boolean =>
-  !state.shapeChecked &&
-  !delta.unreadable &&
-  delta.files.length > 0 &&
-  (delta.lineCount >= SHAPE_CHECK_LINES || delta.files.length >= SHAPE_CHECK_FILES);
+  !state.shapeChecked && !delta.unreadable && delta.files.length > 0;
 
 function shouldRunSkeptic(
   state: RunSentinelState,
@@ -496,12 +493,9 @@ export class OverseerSentinel {
   }
 
   attach(pi: ExtensionAPI): void {
-    pi.on("session_start", () => {
-      this.primeBaseline(this.options.activeLaunch());
-    });
-    pi.on("before_agent_start", () => {
-      this.primeBaseline(this.options.activeLaunch());
-    });
+    const prime = () => this.primeBaseline(this.options.activeLaunch());
+    pi.on("session_start", prime);
+    pi.on("before_agent_start", prime);
     pi.on("turn_end", (event, ctx) => this.onTurnEnd(event, ctx));
     pi.on("agent_before_settle", (event, ctx) => this.onBeforeSettle(event, ctx));
   }

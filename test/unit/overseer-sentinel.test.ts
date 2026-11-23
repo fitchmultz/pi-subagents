@@ -23,12 +23,13 @@ import {
   checkpointEvidenceLines,
   checkpointKindLabel,
   inspectJudgeCheckpoints,
+  judgeUnavailable,
+  readJudgeCheckpoints,
+  recordJudgeCheckpoint,
 } from "../../src/agent/overseer-evidence.ts";
 import { readEscalation, resolveActiveEscalation } from "../../src/agent/overseer-pause.ts";
 import {
   evaluateLiveSkeptic,
-  judgeUnavailable,
-  readJudgeCheckpoints,
   validateGroundedFindings,
   type SkepticModelRegistry,
 } from "../../src/agent/overseer-skeptic.ts";
@@ -361,6 +362,72 @@ nodeDescribe("overseer-skeptic grounding and fallback", () => {
       assert.equal(outcome.kind, "disabled");
     },
   );
+
+  nodeIt(
+    "validates report_findings tool calls via pi-ai and flags model-context-window diff truncation",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-tool-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      const launch = makeLaunch(base, repo);
+
+      // Small contextWindow forces truncation with an explicit marker in prompt & checkpoint.
+      const smallModel: Model<Api> = {
+        ...makeModel("cloudflare-ai-gateway", "claude-haiku-5-5", false),
+        contextWindow: 4_096,
+        maxTokens: 2_048,
+      };
+      let capturedPrompt = "";
+      const bigDiff = `${sampleDiff}\n+${"x".repeat(10_000)}\n`;
+      const registry = makeStreamRegistry([smallModel], async (_model, prompt) => {
+        capturedPrompt = prompt;
+        return {
+          ...fakeAssistant(""),
+          content: [
+            {
+              type: "toolCall",
+              id: "tc-1",
+              name: "report_findings",
+              arguments: {
+                action: "flag",
+                findings: [
+                  {
+                    kind: "dropped_behavior",
+                    file: "src/recovery.ts",
+                    excerpt:
+                      "const priorWindow = notes.primaryNotePath === undefined ? history : undefined;",
+                    why: "Drops checkpoint unconditionally.",
+                    blocking: true,
+                  },
+                ],
+              },
+            },
+          ],
+        };
+      });
+
+      const outcome = await evaluateLiveSkeptic(base, launch, {
+        modelRegistry: registry,
+        judgeSpec: "auto",
+        ownerContext: undefined,
+        taskPrompt: launch.prompt,
+        guidance: [],
+        changedFiles: ["src/recovery.ts"],
+        diff: bigDiff,
+        failed: new Set(),
+        signal: undefined,
+      });
+      assert.equal(outcome.kind, "verdict");
+      assert.equal(outcome.verdict.blocking.length, 1);
+      assert.equal(outcome.verdict.truncated, true);
+      assert.equal(outcome.checkpoint.truncated, true);
+      assert.match(capturedPrompt, /diff truncated at \d+ of \d+ chars/u);
+
+      recordJudgeCheckpoint(base, launch.id, outcome.checkpoint);
+      const inspected = inspectJudgeCheckpoints(base, launch.id, (n) => String(n));
+      assert.match(inspected.lines[1] ?? "", /diff truncated to model context window/u);
+    },
+  );
 });
 
 nodeDescribe("overseer controller & owner context", () => {
@@ -393,35 +460,26 @@ nodeDescribe("overseer controller & owner context", () => {
       assert.deepEqual(prepared, { overseer: { enabled: true, judge: "auto" } });
 
       const ownerContext = captureOwnerContext({
-        getBranch: () => [
-          {
+        getBranch: () =>
+          Array.from({ length: 6 }, (_, i) => ({
             type: "message",
-            id: "u1",
-            parentId: null,
+            id: `u${i + 1}`,
+            parentId: i === 0 ? null : `u${i}`,
             timestamp: "2026-11-23T00:00:00Z",
-            message: { role: "user", content: "First requirement", timestamp: 1 },
-          },
-          {
-            type: "message",
-            id: "a1",
-            parentId: "u1",
-            timestamp: "2026-11-23T00:00:01Z",
-            message: fakeAssistant("ok"),
-          },
-          {
-            type: "message",
-            id: "u2",
-            parentId: "a1",
-            timestamp: "2026-11-23T00:00:02Z",
             message: {
               role: "user",
-              content: [{ type: "text", text: "Hold merge until full stack" }],
-              timestamp: 2,
+              content:
+                i === 5
+                  ? [{ type: "text", text: `Rule 6: ${"z".repeat(3_000)}` }]
+                  : `Rule ${i + 1}: keep earlier owner instruction`,
+              timestamp: i + 1,
             },
-          },
-        ],
+          })),
       });
-      assert.equal(ownerContext, "First requirement\n---\nHold merge until full stack");
+      assert.ok(ownerContext !== undefined);
+      assert.match(ownerContext, /Rule 1: keep earlier owner instruction/u);
+      assert.match(ownerContext, /Rule 6: zzz/u);
+      assert.ok(ownerContext.length > 3_000);
     },
   );
 });

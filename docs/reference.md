@@ -499,7 +499,7 @@ that watermark.
 Three predictable triggers pause the child and notify the parent with `[agent-escalation]`:
 
 1. **Early shape check (`shape_check`):** fires once per editing run on the first mutating turn
-   whose delta reaches at least `40` changed diff lines or `2` changed files.
+   that modifies the working tree.
 2. **Grounded skeptic (`skeptic`) & tool errors (`tool_errors`):** mid-flight, every `4` mutating
    turns or `120` changed diff lines since the last skeptic check (and before settlement if
    unjudged edits remain), the skeptic model evaluates the new diff against `ownerContext`,
@@ -519,8 +519,10 @@ With `/overseer-judge auto`, the skeptic tries available chat models via Pi's na
 2. `cloudflare-ai-gateway/gpt-6-luna:medium` → `openai/gpt-6-luna:medium`
 3. `google/gemini-3.8-flash:medium`
 
-With an explicit `provider/model[:thinking]` spec, it asks only that model. Every skeptic response
-must return structured JSON with findings (`kind`, `file`, `excerpt`, `why`, `blocking`).
+With an explicit `provider/model[:thinking]` spec, it asks only that model. The request exposes a
+`report_findings` tool validated with `pi-ai`'s `validateToolCall` (falling back to structured JSON
+text if the model answers in text) and sizes the diff from the model's declared `contextWindow`,
+marking any truncation both in the prompt and on the recorded checkpoint.
 `validateGroundedFindings` verifies in code that each finding's `file` is in the changed diff and
 its literal `excerpt` (>= 6 chars) appears verbatim inside that file's diff hunks; any ungrounded
 finding is dropped automatically so content-free pauses cannot happen.

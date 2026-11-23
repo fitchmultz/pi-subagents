@@ -22,9 +22,6 @@ export const OVERSEER_STATE_FILE = "overseer.json";
 export const DEFAULT_OVERSEER_MODEL = "inherit";
 export const DEFAULT_OVERSEER_JUDGE = "auto";
 
-const MAX_OWNER_MESSAGES = 4;
-const MAX_OWNER_CONTEXT_CHARS = 2500;
-
 /** Live parent overseer state, shared with running children via `<base>/overseer.json`. */
 export interface ActiveOverseer {
   readonly enabled: boolean;
@@ -139,14 +136,7 @@ export function captureOwnerContext(
       messages.push(text);
     }
   }
-  const recent = messages.slice(-MAX_OWNER_MESSAGES);
-  if (recent.length === 0) {
-    return undefined;
-  }
-  const joined = recent.join("\n---\n");
-  return joined.length <= MAX_OWNER_CONTEXT_CHARS
-    ? joined
-    : joined.slice(joined.length - MAX_OWNER_CONTEXT_CHARS);
+  return messages.length === 0 ? undefined : messages.join("\n---\n");
 }
 
 function hostSettings(

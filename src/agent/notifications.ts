@@ -16,9 +16,9 @@ import {
   checkpointEvidenceLines,
   checkpointKindLabel,
   formatFindingsLines,
+  judgeUnavailable,
 } from "./overseer-evidence.ts";
 import { readEscalation } from "./overseer-pause.ts";
-import { judgeUnavailable } from "./overseer-skeptic.ts";
 import { readOverseerNotes } from "./overseer-sentinel.ts";
 import { launchAt, list, read, runDirectory } from "./storage.ts";
 import { accountingState, readCanonicalResult, readResult } from "./usage.ts";
