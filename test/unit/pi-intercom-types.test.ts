@@ -234,22 +234,6 @@ nodeDescribe("intercomSchema strict property validation", () => {
         arguments: claim,
       });
     }
-    const validReplyWithContract = {
-      action: "reply",
-      replyTo: "msg-1",
-      message: "Widened scope to include tests.",
-      contract: {
-        scope: ["src/**", "test/**/*.test.ts"],
-        verification: ["npm test"],
-      },
-    };
-    Assert(intercomSchema, validReplyWithContract);
-    validateToolArguments(tool, {
-      type: "toolCall",
-      id: "call-valid-reply-contract",
-      name: "intercom",
-      arguments: validReplyWithContract,
-    });
   });
 
   nodeIt("rejects unexpected properties on the root schema and attachment items", () => {
@@ -270,6 +254,7 @@ nodeDescribe("intercomSchema strict property validation", () => {
       { action: "send", to: "worker", message: "Hi", delivery: "steer" },
       { action: "send", to: "worker", message: "Hi", passive: true },
       { action: "send", to: "worker", message: "Hi", queueMode: "replace", threadId: "t1" },
+      { action: "reply", message: "Hi", contract: { scope: ["src"] } },
     ]) {
       assert.throws(() => Assert(intercomSchema, removed));
     }
@@ -294,24 +279,6 @@ nodeDescribe("intercomSchema strict property validation", () => {
         id: "call-attachment-extra",
         name: "intercom",
         arguments: attachmentExtra,
-      });
-    });
-
-    const contractExtra = {
-      action: "reply",
-      message: "Hello",
-      contract: {
-        scope: ["src"],
-        unexpectedContractField: true,
-      },
-    };
-    assert.throws(() => Assert(intercomSchema, contractExtra));
-    assert.throws(() => {
-      validateToolArguments(tool, {
-        type: "toolCall",
-        id: "call-contract-extra",
-        name: "intercom",
-        arguments: contractExtra,
       });
     });
   });

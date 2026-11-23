@@ -11,7 +11,7 @@ import {
   type Result,
   type Waiting,
 } from "./contracts.ts";
-import { escalationKindLabel, escalationSteers } from "./overseer-evidence.ts";
+import { checkpointKindLabel } from "./overseer-evidence.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 
 type Admission = "pending" | "admitted";
@@ -57,7 +57,6 @@ export function continuationDecision(
   }
 }
 
-/** A settled result owns the status. Otherwise only a live run without a successor is running. */
 export function runStatusOf(
   result: Result | undefined,
   live: boolean,
@@ -68,11 +67,13 @@ export function runStatusOf(
   }
   return live && !superseded ? "running" : "interrupted";
 }
+
 function hasSuccessor(base: string, launch: Launch): boolean {
   return (
     read(path.join(runDirectory(base, launch.id), "successor.json"), successorSchema) !== undefined
   );
 }
+
 export function runStatus(base: string, launch: Launch, state: RunState, live: boolean): RunStatus {
   return runStatusOf(
     state.kind === "settled" ? state.result : undefined,
@@ -80,21 +81,19 @@ export function runStatus(base: string, launch: Launch, state: RunState, live: b
     hasSuccessor(base, launch),
   );
 }
-/** The durable background work that keeps this run open; only a running run can wait. */
+
 export function runWaiting(base: string, launch: Launch, status: RunStatus): Waiting | undefined {
   return status === "running"
     ? read(path.join(runDirectory(base, launch.id), "waiting.json"), waitingSchema)
     : undefined;
 }
 
-/** What paused the run, which pause it is, and how many earlier pauses were answered by steering. */
 export function pauseLabel(escalation: Escalation): string {
-  const steers = escalationSteers(escalation);
+  const steers = escalation.steers ?? 0;
   const steered = steers === 0 ? "" : `, ${steers} steer${steers === 1 ? "" : "s"}`;
-  return `${escalationKindLabel(escalation)} #${escalation.strikes}${steered}`;
+  return `${checkpointKindLabel(escalation)} #${escalation.pauseNumber}${steered}`;
 }
 
-/** Active unresolved mid-run overseer escalation pausing this running child, if any. */
 export function runEscalation(
   base: string,
   launch: Launch,

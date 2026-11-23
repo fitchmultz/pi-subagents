@@ -1632,30 +1632,31 @@ nodeTest(
       runId: secondId,
       owner,
       at: 1,
-      strikes: 1,
-      kind: "scope_violation",
-      summary: "Out-of-scope edit",
+      pauseNumber: 1,
+      kind: "skeptic",
+      summary: "Grounded concern in README.md",
       changedFiles: ["README.md"],
       diffExcerpt: "+# touched",
       diffDigest: "digest-second",
+      since: "launch",
     });
     await until(
-      () => shown().includes("○ active-second · paused: scope_violation #1"),
+      () => shown().includes("○ active-second · paused: skeptic flag #1"),
       "strip renders paused overseer escalations distinctly",
       shown,
     );
     terminal.click(screen, "○ active-second");
     await until(
       () =>
-        shown().includes("active-second · paused: scope_violation #1 · Details") &&
-        shown().includes("> paused: scope_violati"),
+        shown().includes("active-second · paused: skeptic flag #1 · Details") &&
+        shown().includes("> paused: skeptic flag"),
       "/agents header and sidebar surface paused overseer escalation state",
       shown,
     );
     terminal.send("\x1b");
     await until(
       () =>
-        shown().includes("paused: scope_violation #1 · active-second") &&
+        shown().includes("paused: skeptic flag #1 · active-second") &&
         shown().includes("interrupted · active-first") &&
         shown().includes("stopped · stopped-history"),
       "watch returns to the explicit inventory with saved history",

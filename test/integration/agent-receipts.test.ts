@@ -8,7 +8,6 @@ import { test as nodeTest, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { spy, stub } from "sinon";
 import { deliver, notifications, published, settle } from "../../src/agent/notifications.ts";
-import { recordOverseerReview } from "../../src/agent/overseer-review.ts";
 import { write } from "../../src/agent/storage.ts";
 import { legacyNotifications } from "../../src/agent/legacy.ts";
 import { resolveTempRootDir } from "../../src/shared/types.ts";
@@ -57,40 +56,61 @@ async function fixture(t: TestContext, content = "Publish native fixture history
   return { ...native, manager, file, launch, reporter };
 }
 
-nodeTest("a completion queued before approval does not demand a second review", async (t) => {
-  const h = await fixture(t);
-  const base = path.join(h.launch.cwd, "runs");
-  const launch = { ...h.launch, overseer: { enabled: true as const, judge: "off" as const } };
-  write(path.join(base, launch.id, "launch.json"), launch);
-  write(path.join(base, launch.id, "result.json"), {
-    id: launch.id,
-    owner: launch.owner,
-    status: "completed",
-    endedAt: Date.now(),
-    changedFiles: ["src/update.ts"],
-  });
-  let queued = false;
-  const unsubscribe = h.session.agent.subscribe((event) => {
-    if (event.type !== "turn_start" || queued) {
-      return;
-    }
-    queued = true;
-    const { notices } = notifications(h.context, base, launch.owner);
-    assert.equal(notices.length, 1);
-    deliver(h.pi, h.context, notices);
-    assert.equal(published(h.context, launch), undefined, "completion is queued, not published");
-    recordOverseerReview(base, launch, "approved", "Checked the final diff.");
-  });
-  t.after(unsubscribe);
-  await h.session.prompt("Review the completed change.");
-  await h.session.waitForIdle();
-  const receipt = published(h.context, launch);
-  assert.ok(receipt !== undefined, "the SDK published the queued completion");
-  const notice = h.manager.getEntries().find((entry) => entry.id === receipt);
-  assert.ok(notice?.type === "custom_message" && typeof notice.content === "string");
-  assert.doesNotMatch(notice.content, /Overseer review required|in this turn before finishing/u);
-  assert.match(notice.content, /approved.*changes_requested/u);
-});
+nodeTest(
+  "non-blocking overseer notes deliver once without waking and completions deliver cleanly",
+  async (t) => {
+    const h = await fixture(t);
+    const base = path.join(h.launch.cwd, "runs");
+    const launch = { ...h.launch, overseer: { enabled: true as const, judge: "auto" as const } };
+    write(path.join(base, launch.id, "launch.json"), launch);
+    write(path.join(base, launch.id, "overseer-notes.json"), {
+      version: 1,
+      notes: [
+        {
+          id: "note-1",
+          runId: launch.id,
+          owner: launch.owner,
+          at: Date.now(),
+          model: "cloudflare-ai-gateway/claude-haiku-5-5",
+          findings: [
+            {
+              kind: "invented_constraint",
+              file: "src/update.ts",
+              excerpt: "const extraCap = 10;",
+              why: "Minor heads-up.",
+              blocking: false,
+            },
+          ],
+        },
+      ],
+    });
+    const first = notifications(h.context, base, launch.owner);
+    assert.equal(first.notices.length, 1);
+    assert.equal(first.notices[0]?.wake, false);
+    deliver(h.pi, h.context, first.notices);
+    assert.equal(h.context.isIdle(), true, "non-blocking note must not wake an idle parent");
+    // Second scan while queued does not re-emit the note.
+    const second = notifications(h.context, base, launch.owner);
+    assert.equal(second.notices.length, 0);
+
+    write(path.join(base, launch.id, "result.json"), {
+      id: launch.id,
+      owner: launch.owner,
+      status: "completed",
+      endedAt: Date.now(),
+      changedFiles: ["src/update.ts"],
+    });
+    const comp = notifications(h.context, base, launch.owner);
+    assert.equal(comp.notices.length, 1);
+    deliver(h.pi, h.context, comp.notices);
+    await h.session.waitForIdle();
+    const receipt = published(h.context, launch);
+    assert.ok(receipt !== undefined, "the SDK published the queued completion");
+    const notice = h.manager.getEntries().find((entry) => entry.id === receipt);
+    assert.ok(notice?.type === "custom_message" && typeof notice.content === "string");
+    assert.doesNotMatch(notice.content, /Overseer review required|approved.*changes_requested/u);
+  },
+);
 
 nodeTest(
   "physical parent receipt authority follows LF, prefix replacement, inode, shrink and recovery, not stale memory",

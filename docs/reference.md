@@ -82,13 +82,12 @@ project, display name, or a different session forked from its history.
 Live guidance and saved-run successors keep the child's saved effort even if the
 parent's effort has changed.
 
-| Action     | Purpose                                                                                                                                                   |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list`     | Page through the current native owner's saved-run metadata, without output previews.                                                                      |
-| `inspect`  | Read one run's result and process/publication facts without waiting or interrupting.                                                                      |
-| `continue` | Supply a complete follow-up prompt (and optional `contract` amendment) using the saved child conversation.                                                |
-| `stop`     | Request termination; inspect the actual process outcome afterward.                                                                                        |
-| `review`   | Record overseer `approved` (with optional steering `note` on a running/paused child) or `changes_requested` verdict (with optional `contract` amendment). |
+| Action     | Purpose                                                                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`     | Page through the current native owner's saved-run metadata, without output previews.                                                        |
+| `inspect`  | Read one run's result and process/publication facts without waiting or interrupting.                                                        |
+| `continue` | Steer a live/paused child, approve a paused overseer checkpoint (omit `prompt`), or resume a settled child conversation as a new successor. |
+| `stop`     | Request termination (and release any active checkpoint pause); inspect the actual process outcome afterward.                                |
 
 All actions except `list` require `id`. Use IDs returned by the tools rather than
 infer them from display names. `list` returns at most 50 runs per page: running
@@ -303,9 +302,7 @@ clock bound remains usable when its original process identity is verifiable.
 ## `intercom`
 
 Use `list`, `claim`, `send`, and `last` for normal coordination. `ask`, `reply`,
-`pending`, and `status` support request/reply and diagnosis; a main answering an
-owned child run's ask may pass optional `contract` on `reply` to amend the
-child's delegation contract atomically before the reply wakes it. `list` rows
+`pending`, and `status` support request/reply and diagnosis. `list` rows
 include Git repo/branch context when in a repository, optional `working_on`
 claims (set or cleared via `claim` without waking peers), and `worker_started` /
 `last_turn_error` health tags locally and across devices. Unpinned `last` reads
@@ -471,299 +468,80 @@ separate authenticated bridge setup and coordinated companion migration.
 Overseer mode is off by default. Toggle it per session branch with `/overseer` (`/overseer on`, `/overseer off`, or `--overseer`)
 or configure defaults under `subagents.overseer` (`{ enabled, model, judge }`) in Pi settings.
 `/overseer-model` sets an optional default child model (`inherit` by default, keeping normal `delegate` model/thinking inheritance unless a `provider/model[:thinking]` target is configured);
-`/overseer-judge` sets the classifier judge (`auto`, `off`, or `provider/model`). Main-session
+`/overseer-judge` sets the grounded skeptic model (`auto`, `off`, or `provider/model[:thinking]`). Main-session
 tools remain unrestricted so the overseer can run scripts or apply small surgical edits directly.
 Changes from `/overseer`, `/overseer-judge`, or `/tree` sync immediately to `<run-base>/overseer.json`
-so running subagents and `agent_runs continue` / `changes_requested` successors pick up the live state:
-`/overseer off` stops new checkpoints and releases open escalations without marking changes approved,
-and `/overseer-judge off` aborts/skips decision-judge checkpoints and releases open judge pauses while
-keeping deterministic tripwires active.
+so running subagents and `agent_runs continue` successors pick up the live state:
+`/overseer off` stops new checkpoints and releases open pauses,
+and `/overseer-judge off` aborts/skips skeptic evaluations and releases open skeptic pauses while
+keeping structural checkpoints active.
 
-When overseer mode is enabled, `delegate` requires `contract`:
+### Read-only children and free editing
 
-- `scope`: relative edit-tool path prefixes or native POSIX globs inside `cwd` (for example `src`,
-  `src/foo.ts`, `src/**`, `test/**/*.test.ts`, `packages/*/src/**`, `{src,test}/**`, or `*.ts`),
-  `['*']` for any edit path in `cwd`, or `[]` to disable repo edits (edit tools remain allowed only
-  inside the run's private scratch directory below). Pre-write scope checks constrain edit tools
-  (`edit`, `write`, `replace_text`, `write_files`, `apply_patch`); shell commands are not
-  OS-sandboxed and are checked post-turn via
-  `git status`.
-- `verification`: required when `scope` is non-empty.
-- `baseBranch`, `requiredPrimitives`, `nonGoals`: optional Git and native-API constraints.
+No delegation contract or file-glob allowlist is required.
 
-Every child run with a `contract` also receives a private per-run scratch directory outside the
-repository (`<run-base>/<rootId>/scratch`, mode `0o700`, shared across successor continuations),
-exposed via `PI_SUBAGENT_SCRATCH_DIR`, the child's delegation contract section, and
-`agent_runs inspect`. Edit tools (`edit`, `write`, `replace_text`, `write_files`, `apply_patch`)
-may write inside that scratch directory for temporary scripts or notes—even under read-only
-`scope: []`—while repo files outside `contract.scope`, arbitrary `/tmp` paths, `..` traversal, and
-symlink escapes remain blocked. The scratch directory is excluded from overseer Git diff baselines.
+- Pass `readOnly: true` on `delegate` for research, audits, or review children. File-editing tools
+  (`edit`, `write`, `replace_text`, `write_files`, `apply_patch`) are disabled for read-only
+  children, and editing checkpoints (`shape_check`, `final_diff`, skeptic) are skipped. Shell
+  commands are not OS-sandboxed.
+- Editing children work freely from the plain-English task prompt and standing rules (prefer
+  isolated worktrees). When overseer mode is enabled, `prepareLaunch` also snapshots recent owner
+  messages from the parent session branch (`ownerContext`) so the skeptic sees the owner's actual
+  intent even on `context: "fresh"` launches.
 
-Whenever `delegate` receives an explicit path or glob in `contract.scope`, it checks the entry
-against the resolved child `cwd` before starting a child. New top-level files and root-level globs
-such as `*.ts` are allowed. A multi-segment literal path needs an existing first directory (so
-`src/new-dir/new.ts` is valid if `src/` exists), and a glob with a static leading directory prefix
-(such as `src/**` or `packages/core/src/**/*.ts`) requires that leading directory to exist inside
-`cwd`. If a required leading directory is new, create it before calling `delegate`. Entries using
-absolute paths, `..` traversal (including inside brace expressions), or symlinks resolving outside
-`cwd` are rejected; edit-tool target paths are canonicalized inside `cwd` before matching. Wildcard
-globs (`*`, `**`, `?`, `{a,b}`) match leading-dot files and directories (such as `src/.env.example`
-under `src/**`), and bracketed path segments (such as `src/app/[id]/page.tsx` or `src/app/[id]/**`,
-whether existing or not yet created) are treated as literal path characters rather than glob
-character classes.
+### Single-watermark checkpoints
 
-Supervised children run zero-cost tripwires on mutating or error turns (three consecutive turns with tool errors,
-out-of-scope changes of the child's own, and `baseBranch` ancestry/direct-commit guards) plus
-debounced decision-model checkpoints (every 4 mutating turns, 120 or more new diff lines, and
-pre-settle). When a check requests a pause, the child writes `escalation.json`, pauses, and wakes
-the parent once with `[agent-escalation]`. Steering via `continue` / `changes_requested`, approving via `review`
-(`verdict="approved"`), or stopping via `stop` resolves the pause immediately.
+Each overseen run tracks one working-tree watermark (`lastSeen`, initialized at launch via a
+temporary index copy and `git write-tree` without touching the real index or working tree) and
+advances it whenever the parent answers a checkpoint. Every checkpoint shows only the delta since
+that watermark.
 
-To amend a delegation contract mid-run or on continuation without stopping the child and losing
-context, pass an optional `contract` object to `agent_runs` with `action="continue"` or
-`action="review"` (`verdict="changes_requested"`), or to `intercom` with `action="reply"` when
-answering an owned child run's ask. Specified fields (`scope`, `verification`,
-`baseBranch`, `requiredPrimitives`, `nonGoals`) replace their previous values while omitted fields
-keep their current values; pass `[]` or `""` to clear optional fields, and supply `scope` (plus
-`verification` when non-empty) when attaching a contract to a run that had none. Invalid scopes or
-actions fail fast before modifying run state (and before sending an `intercom` reply). Amendments are persisted in `<runDir>/contract.json`,
-reloaded dynamically by child edit-tool guards, system-prompt updates, deterministic tripwires
-(including live `baseBranch` updates), and decision checkpoints, carried onto successor launches,
-and shown with amendment history in `agent_runs inspect`.
+Three predictable triggers pause the child and notify the parent with `[agent-escalation]`:
 
-### What counts as the child's change
+1. **Early shape check (`shape_check`):** fires once per editing run on the first mutating turn
+   whose delta reaches at least `40` changed diff lines or `2` changed files.
+2. **Grounded skeptic (`skeptic`) & tool errors (`tool_errors`):** mid-flight, every `4` mutating
+   turns or `120` changed diff lines since the last skeptic check (and before settlement if
+   unjudged edits remain), the skeptic model evaluates the new diff against `ownerContext`,
+   `taskPrompt`, and delivered parent `guidance`. Three consecutive turns with finalized tool
+   errors trigger a `tool_errors` pause listing the exact Pi turn entry IDs and call outcomes.
+3. **Pre-ship final diff (`final_diff`):** right before the child settles (`agent_before_settle`),
+   if unreviewed file changes exist since `lastSeen`, the child pauses so the parent sees the final
+   diff before completion. If no edits occurred since the previous checkpoint, the child settles
+   without double-pausing.
 
-Each checkpoint saves the child's working tree as a Git tree object: tracked and untracked files,
-without ignored files and the harness's own files. The index and the working tree are not
-touched. The child's changes are the differences between two such trees, without the content
-the child did not write:
+### Grounded skeptic model and evidence rule
 
-- Commits that a ref named when the run launched are known. The tip of `origin/<baseBranch>`
-  is also known, or the checked-out branch's configured remote-tracking tip if `baseBranch`
-  is omitted, when Git's reflog records a fetch or pull to that exact tip. Without a matching
-  entry, the remote tip doesn't exclude changes from review. After a merge, a fast-forward,
-  or a checkout, content that matches a known commit under the current history is not listed
-  as new work. An edit that differs from the known versions stays listed.
-- Other worktrees of the same repository are not read. A commit or an edit that another
-  session makes there is never listed.
-- A commit that the child made and then moved away from, for example on a side branch, stays
-  listed. It is read from the HEAD reflog of the child's own worktree.
-- An accepted edit of the child that was never committed stays listed when a checkout of
-  another branch drops it, although the file then equals the commit that was checked out. An
-  uncommitted edit that was there at launch is not the child's, and dropping it lists nothing.
-  A soft reset leaves the working tree unchanged. It doesn't turn upstream content already
-  in that tree into accepted child work, so restoring that content from the new upstream HEAD
-  does not trigger a scope warning.
-- When the base branch moves while another worktree has it checked out, that is not a
-  `branch_violation` of this run: Git lets only that worktree commit to it.
+With `/overseer-judge auto`, the skeptic tries available chat models via Pi's native
+`modelRegistry.streamSimple` in this order:
 
-The saved trees are objects that no ref holds. If one can no longer be read, because the
-repository was replaced or `git prune` removed the object, the changes cannot be computed. The
-checkpoint then pauses the run with a `loop_violation`, and a completed run lists
-`(git-status-unavailable)` as its changed file, so that the review is still required.
+1. `cloudflare-ai-gateway/claude-haiku-5-5` → `anthropic/claude-haiku-5-5`
+2. `cloudflare-ai-gateway/gpt-6-luna:medium` → `openai/gpt-6-luna:medium`
+3. `google/gemini-3.8-flash:medium`
 
-The `changedFiles` of a completed run follow the same rules, measured from launch.
+With an explicit `provider/model[:thinking]` spec, it asks only that model. Every skeptic response
+must return structured JSON with findings (`kind`, `file`, `excerpt`, `why`, `blocking`).
+`validateGroundedFindings` verifies in code that each finding's `file` is in the changed diff and
+its literal `excerpt` (>= 6 chars) appears verbatim inside that file's diff hunks; any ungrounded
+finding is dropped automatically so content-free pauses cannot happen.
 
-### What a checkpoint looks at
+- Grounded `blocking: true` findings pause the child and quote each file, hunk line, and reason.
+- Grounded `blocking: false` findings (when no blocking findings exist) are written to
+  `overseer-notes.json` and delivered as non-blocking `[overseer-note]` heads-up messages without
+  pausing the child or waking an idle parent.
+- Every evaluated skeptic checkpoint (`ok`, `flagged`, `notes`, or `unavailable`, with counts and
+  any failed candidates) is appended to `judge-checkpoints.json` and surfaced in `agent_runs inspect`.
+  If all candidates fail, `judge-unavailable.json` is recorded and the child continues normally so
+  structural checkpoints still run.
 
-A run keeps two accepted states. Both start at launch.
+### Answering a checkpoint pause
 
-- The scope check and the judge look at the work since the last state that passed. A state
-  passes when the overseer approves a pause, when a checkpoint finds no new work, or when the
-  judge finds the new work clean. The judge's line count is the size of that new work.
-- A pause reports all the work since the overseer's last approval, or since launch before the
-  first one. Work that only the judge cleared is still new to the overseer.
+Answer any pause with `agent_runs`:
 
-Approving a pause accepts the paused state:
-
-- An approved out-of-scope file is not flagged again until it changes again. Deleting an
-  approved file or reverting an approved edit is a change.
-- An approved base-branch issue is not raised again in that run.
-- Committing approved work raises nothing: the working tree did not change.
-
-If you approve and steer at the same pause, approval accepts the paused state and the child
-receives the admitted guidance in its next turn. Steering alone does not approve work.
-Out-of-scope work that stays in place is flagged again at the next checkpoint. After the judge
-flags a state, it is not asked about that unchanged state again until the checkpoint before
-the run settles.
-
-The judge receives the new diff, the names of previously accepted files (`acceptedFiles`), the
-task prompt (`taskPrompt`), the contract, and task-owner guidance (`taskGuidance`) recorded in
-this run's child session. Guidance includes delivered `continue` and `changes_requested` prompts,
-including corrections that released a pause, and intercom messages from the delegating session.
-For a saved-run continuation (`continuation`
-is `true`), the task prompt is newer than the saved contract. Later explicit guidance supersedes
-conflicting earlier instructions for the classifier. It does not change the edit-tool scope or
-base-branch checks. Pending messages, approval summaries, messages from other workers, and
-unrelated app messages do not change the judge's instructions. Give changes to the task directly
-in a message; the judge does not open referenced notes.
-
-### Which classifier judges, and when none answers
-
-With the judge on `auto`, a checkpoint asks the available classifiers in this order, until one
-gives a verdict:
-
-1. `google/gemini-decision-1`, `cloudflare-ai-gateway/gpt-6-luna`, `openai/gpt-6-luna`,
-   `cloudflare-workers-ai/@cf/cloudflare/clef`,
-   `cloudflare-workers-ai/@cf/cloudflare/clef-flash`. The two `gpt-6-luna` classifiers are
-   GPT-6 Luna on OpenAI's Decisions API, through Cloudflare AI Gateway and directly from OpenAI.
-2. Every other available classifier, in the order of the model registry. The judge sends text
-   and one choice question, which every classifier model accepts.
-
-With a configured judge (`provider/model`) it asks only that classifier, and never another one
-in its place. With the judge `off` it asks nothing and reports nothing.
-
-A choice requesting review still pauses at the same checkpoint, regardless of confidence. The
-choice does not name a hunk or rule. The [pause notice](#what-a-pause-notice-shows) shows the
-work for the overseer to review without claiming a violation.
-
-A classifier gives no verdict when its request fails, for example because the provider account
-has no credit, the key is rejected or the provider cannot be reached, and when its response
-does not hold one of the verdicts that were asked for. Neither is a finding about the child's
-work, neither counts as a clean verdict, and neither pauses the child.
-
-- On `auto`, the checkpoint then asks the next classifier. For the rest of the run, a
-  classifier that gave no verdict is asked after the others, so its failed request is not
-  repeated while another classifier answers.
-- No classifier gives a verdict when every request fails, when no classifier is available, or
-  when the configured judge fails or is not an available classifier. The child then
-  continues. The scope, branch and error-loop checks still run and still pause it. The new
-  work stays unjudged: the next judge checkpoint asks again, about all the work since the
-  last state that passed.
-- A run that ends with work that has no verdict says so in its completion notice, once, with
-  the reason for each classifier. The review of a completed run with changes is required as
-  for every supervised run.
-- A judge request that is cancelled because the child's run is cancelled is not a verdict and
-  not a failed request: no other classifier is asked, and the cancelled request is not
-  reported.
-
-```text
-[Overseer judge unavailable: no classifier judged the last changes of this run against its contract. The scope, branch and error-loop checks ran. Overseer judge 'google/gemini-decision-1' failed: Google Decisions error (402): …]
-```
-
-While work has no verdict, the run directory holds `judge-unavailable.json` (`at`, `summary`).
-The child removes it when a classifier gives a verdict on that work, clean or not, when the
-overseer approves a pause, or when the work is gone. A parent that runs an older package
-version does not read the file, and its completion notice does not have the line.
-
-Every evaluated judge checkpoint—whether `compliant`, `scope_violation`, `primitive_violation`,
-or `unavailable`—is also appended atomically to `judge-checkpoints.json` in the run directory
-(`version: 1`, `checkpoints`: oldest-first entries with `at`, `judge`, `outcome`, `classifier`
-when a classifier answered, optional `failed` candidates with `{ classifier, reason }`, and
-optional `error` when no candidate could be asked). Skipped (`off` or empty diff) and cancelled
-checkpoints are not recorded. `agent_runs inspect` surfaces the latest 20 recorded checkpoints
-when present.
-
-### What a pause notice shows
-
-The `[agent-escalation]` notice describes the work since the overseer's last approval, or since
-launch before the first one, and says which of the two it is:
-
-```text
-[Overseer escalation #2 - scope_violation] Run 7f3a… (docs-fix) paused in /repo/worktree.
-Reason: Modified out-of-scope path(s): docs/NEW.md (allowed scope: src).
-Changes since your last approval:
-  +1 -0 docs/NEW.md
-  +1 -0 src/allowed.ts
-Approved earlier in this run (those changes are not shown): README.md, src/big.ts
-diff --git a/docs/NEW.md b/docs/NEW.md
-…
-```
-
-A classifier pause has `review needed` in the heading instead of a violation category. The
-`Reason:` says the classifier asked for a check without naming a hunk or rule. Before the
-change lines, the notice shows `Latest task-owner guidance` or, if there is none, `Task prompt`.
-This is the instruction to consult during review, not a cited rule or the reason for the
-classifier's choice.
-
-```text
-[Overseer escalation #2 - review needed] Run 7f3a… (docs-fix) paused in /repo/worktree.
-Reason: Review needed: example/choice-only asked for a check but did not identify a specific hunk or rule.
-Latest task-owner guidance (for context, not a cited rule):
-Update the example to use the existing helper.
-Changes since your last approval:
-  +1 -1 docs/example.md
-…
-```
-
-- Every changed file has its added and removed line counts. The notice names files relative
-  to the run's cwd, as `changedFiles` does. Only the diff itself has paths relative to the
-  repository root. In the line counts, a file name with a control character, such as a line
-  break, is written as a JSON string.
-- `Changed since the last clean check, look here first` names the files changed after the last
-  state that passed the checks. It appears when that is only a part of the listed work.
-- `Work on these files is not in the diff (committed on a branch the child left, or dropped by
-  a checkout)` names the files of commits the child made and then moved away from, and files
-  with an accepted edit that was never committed and that a checkout of another branch
-  dropped. That work has no line counts and is not in the diff. A file that also has changes
-  in the working tree is in the lines above with those changes.
-- `Approved earlier in this run (those changes are not shown)` names the files of the work
-  that the overseer already approved. A file that changed again after the approval is also in
-  the lines above, with its new change only.
-- The diff is cut at 3000 characters. When it is cut, the excerpt is followed by the command that
-  prints all of it: `git -C <repository> diff <accepted tree> <paused tree>`.
-
-After three consecutive turns with at least one finalized tool error each, the `tool errors`
-notice lists the Pi turn entry ID and each tool name, call ID, and outcome for those turns.
-A turn can contain both successes and failures. Neither outcome alone says whether the child
-made progress. If a failed call has the same tool and submitted arguments as a failed call
-in an earlier turn of the same window, the notice names that earlier call. This compares
-calls, not their causes or side effects. The notice does not copy tool arguments, output, or
-logs. Use `agent_runs inspect` to find the child's native journal if you need to look up an ID.
-See the [mixed-outcome notice from a screenshot check](images/overseer-tool-error-review.png).
-
-Every notice ends with the three answers: steer, approve and stop. The number after `#` is the
-pause number. Earlier pauses answered with `continue` or `review` with `changes_requested`
-count as steers. Approvals do not. The steer count describes prior decisions, not worker
-failures, and does not recommend stopping the run.
-
-`agent_runs list`, `inspect` and the `/agents` observer print both counts for a paused run, for
-example `paused: scope_violation #4, 2 steers` or `paused: review needed #2, 1 steer`.
-`inspect` also shows the tool outcomes.
-
-`escalation.json` carries these facts in `strikes` (the pause number) and in the optional fields
-`since`, `stat`, `diffCommand`, `unchecked`, `leftBehind`, `approved`, `steers`,
-`toolErrorTurns`, and `classifierReview`. Tool-error reviews retain the `loop_violation` file kind
-for older parents. Older children may write `corrections` instead of `steers` and omit
-`toolErrorTurns`.
-
-A classifier pause records `classifierReview.instruction` with
-`classifierReview.source` set to `"guidance"` for the latest task-owner guidance or `"prompt"`
-for the task prompt. On these records, `kind` preserves the classifier's choice category for
-compatibility. It is not a confirmed finding.
-
-A parent that supports `classifierReview` uses `review needed` in the notice and paused status
-when the field is present. An older parent ignores the field, prints the saved category, and
-omits the instruction block. It can still resolve the pause. If the child predates
-`classifierReview`, a newer parent also uses the saved category and omits the block. Without
-`stat`, the notice shows changed files and the diff excerpt rather than line counts.
-
-### What an approval replies
-
-`agent_runs` `action="review"` with `verdict="approved"` records the summary as review evidence.
-It does not send the summary to the child. The receipt reports what the approval changes.
-
-```text
-Overseer review recorded: run 7f3a… (docs-fix) approved at 2026-11-17T17:02:11Z.
-Pause approval recorded. Its next notice arrives when the child pauses again or ends.
-Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.
-```
-
-To approve a running or paused child and send a short follow-up steering note in one call, pass
-optional `note` with `action="review"` and `verdict="approved"`. `summary` remains review-only;
-the approval and `note` are persisted atomically (including inline on `escalation-resolution.json`
-for paused children so the child wakes with both the approval and the note without a race or
-duplicate delivery), and the receipt reports the queued steering command ID. Passing `note` with
-another action, another verdict, whitespace-only text, or a settled/interrupted/unadmitted run
-fails fast without recording a review or queueing a command.
-
-Use `continue` to send guidance without a review verdict. Use `changes_requested` to record
-a verdict and send its summary as the correction or successor prompt. When either action
-releases a pause, the child's next model request includes any earlier queued steers in order,
-then the correction. Ordinary guidance for an active child stays queued, and the receipt does
-not claim the child has read it.
-
-Completion notices point to `inspect` for the current review status, because a notice can
-arrive after approval. Before the parent settles, Pi prompts for still-pending completion
-reviews (at most twice per run). Inspect the diff, then choose `approved` or
-`changes_requested`. Runs with no detected repository changes settle with zero extra turns.
+- **Approve and resume:** `agent_runs({ action: "continue", id })` (omit `prompt`). Advances the
+  watermark and releases the child without injecting extra steering text. On a `final_diff` pause,
+  the child immediately settles and completes.
+- **Steer with corrections:** `agent_runs({ action: "continue", id, prompt: "..." })`. Releases
+  the pause and delivers the steering prompt before the child's next model turn (including on
+  `final_diff`, where the child takes a corrective turn before settling).
+- **Stop:** `agent_runs({ action: "stop", id })`. Releases the pause and terminates the run.

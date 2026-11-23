@@ -8,16 +8,7 @@ import { isRecord } from "../shared/unknown.ts";
 import { Assert, Type } from "./typebox.ts";
 import { thinkingSchema, successorSchema, type Launch, type OverseerLaunch } from "./contracts.ts";
 import { packageRoot, runtimeEntry } from "./host.ts";
-import { prepareContractAmendment, type ContractAmendmentInput } from "./overseer-contract.ts";
-import {
-  ensureScratchDirectory,
-  launchAt,
-  read,
-  runDirectory,
-  safeId,
-  scratchDirectory,
-  write,
-} from "./storage.ts";
+import { launchAt, read, runDirectory, safeId, write } from "./storage.ts";
 
 const configuration = Type.Object({
   model: Type.Optional(Type.String()),
@@ -67,7 +58,7 @@ function ownedRun(context: ExtensionContext, id: string) {
   Assert(singleSchema, owned);
   return owned;
 }
-/** The most recent saved subagent-run record for this run id, if one exists. */
+
 function findOwnedRun(journal: NativeJournal, id: string): Record<string, unknown> | undefined {
   let owned: Record<string, unknown> | undefined;
   for (const record of journal.records) {
@@ -80,6 +71,7 @@ function findOwnedRun(journal: NativeJournal, id: string): Record<string, unknow
   }
   return owned;
 }
+
 function requireExited(pid: unknown): void {
   if (pid === undefined) {
     return;
@@ -97,6 +89,7 @@ function requireExited(pid: unknown): void {
   }
   throw new Error("Legacy producer may still be live; refusing a second owner.");
 }
+
 function frozenModel(contract: Contract, context: ExtensionContext) {
   const model = contract.effectiveConfiguration?.model ?? contract.launch.model;
   const thinking = contract.effectiveConfiguration?.thinking ?? contract.launch.thinking;
@@ -111,6 +104,7 @@ function frozenModel(contract: Contract, context: ExtensionContext) {
   }
   return { provider: model.slice(0, slash), model: model.slice(slash + 1), thinking };
 }
+
 function nativeSession(contract: Contract) {
   if (!path.isAbsolute(contract.sessionFile) || path.extname(contract.sessionFile) !== ".jsonl") {
     throw new Error("Legacy continuation requires the exact saved native journal.");
@@ -130,6 +124,7 @@ function nativeSession(contract: Contract) {
   }
   return { sessionFile: contract.sessionFile, sessionId };
 }
+
 function frozenSnapshot(
   source: string,
   context: ExtensionContext,
@@ -163,7 +158,6 @@ function frozenSnapshot(
   };
 }
 
-/** The committed adoption claim authorizes only its original owned journal. */
 export function adoptedJournal(base: string, launch: Launch): boolean {
   const root = launchAt(base, launch.rootId, launch.owner);
   if (
@@ -182,40 +176,11 @@ export function adoptedJournal(base: string, launch: Launch): boolean {
   );
 }
 
-/** Validates and computes optional contract/scratch fields without touching disk. */
-function savedContractFields(
-  base: string,
-  nextId: string,
-  cwd: string,
-  contract: ContractAmendmentInput | undefined,
-) {
-  if (contract === undefined) {
-    return { fields: {}, amendment: undefined };
-  }
-  const amendment = prepareContractAmendment(undefined, contract, cwd);
-  const scratchDir = scratchDirectory(base, { rootId: nextId });
-  return { fields: { contract: amendment.contract, scratchDir }, amendment };
-}
-
-function publishSavedRun(
-  base: string,
-  launch: Launch,
-  amendment: ReturnType<typeof prepareContractAmendment> | undefined,
-): void {
+function publishSavedRun(base: string, launch: Launch): void {
   const dir = runDirectory(base, launch.id);
   fs.mkdirSync(dir, { mode: 0o700 });
   try {
-    if (amendment !== undefined) {
-      ensureScratchDirectory(base, launch);
-    }
     write(path.join(dir, "launch.json"), launch, true);
-    if (amendment !== undefined) {
-      write(
-        path.join(dir, "contract.json"),
-        { current: amendment.contract, history: [{ at: Date.now(), ...amendment }] },
-        true,
-      );
-    }
   } catch (error) {
     fs.rmSync(dir, { recursive: true, force: true });
     throw error;
@@ -228,11 +193,9 @@ function savedOverseerFields(
   return overseer === undefined ? {} : { overseer };
 }
 
-/** Only frozen single-native-child snapshots cross the retired runtime boundary. */
 export function savedContinuation(options: {
   id: string;
   prompt: string;
-  contract?: ContractAmendmentInput | undefined;
   overseer?: OverseerLaunch | undefined;
   context: ExtensionContext;
   base: string;
@@ -249,16 +212,10 @@ export function savedContinuation(options: {
   const mapping = path.join(base, `legacy-${id}.json`);
   const adopted = read(mapping, successorSchema);
   if (adopted) {
-    if (options.contract !== undefined) {
-      throw new Error(
-        `Legacy run ${id} was already adopted as ${adopted.id}; pass id=${adopted.id} to amend its contract.`,
-      );
-    }
     return { launch: launchAt(base, adopted.id, owner), kind: "existing" };
   }
   const snapshot = frozenSnapshot(source, context, owned);
   const nextId = randomUUID();
-  const { fields, amendment } = savedContractFields(base, nextId, snapshot.cwd, options.contract);
   const launch: Launch = {
     version: 1,
     id: nextId,
@@ -269,12 +226,11 @@ export function savedContinuation(options: {
     sdk: packageRoot(),
     entry: runtimeEntry(),
     prompt,
-    ...fields,
     ...savedOverseerFields(options.overseer),
     ...snapshot,
     createdAt: Date.now(),
   };
-  publishSavedRun(base, launch, amendment);
+  publishSavedRun(base, launch);
   try {
     write(mapping, { id: nextId }, true);
   } catch (error) {

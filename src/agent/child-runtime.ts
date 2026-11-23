@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
 import type {
   CreateAgentSessionRuntimeFactory,
   ExtensionAPI,
@@ -12,15 +11,10 @@ import { shellCommand } from "./process.ts";
 import { localCwdOwner } from "./cwd.ts";
 import type { ToolEvent } from "./observation-state.ts";
 import { backgroundCommands } from "./background-work.ts";
-import {
-  activeContract,
-  formatContractAmendmentSummary,
-  readContractAmendments,
-} from "./overseer-contract.ts";
-import { checkToolCallScope, formatContractSection } from "./overseer-scope.ts";
 import type { OverseerSentinel } from "./overseer-sentinel.ts";
-import { ensureScratchDirectory } from "./storage.ts";
 import { recordAt, type UnknownRecord } from "../shared/unknown.ts";
+
+const EDIT_TOOLS = new Set(["edit", "write", "replace_text", "write_files", "apply_patch"]);
 
 function rewriteLocalBash(
   pi: ExtensionAPI,
@@ -33,31 +27,15 @@ function rewriteLocalBash(
   }
   const owner = pi.getAllTools().find((tool) => tool.name === "bash")?.sourceInfo;
   if (owner && (owner.source === "builtin" || localCwdOwner(owner))) {
-    // Preserve the selected local owner's cwd/env and leave remote/custom tools alone.
     const input = event.input;
     input.command = shellCommand(event.input.command, directory, token);
   }
 }
 
 interface GuardOptions {
-  readonly base: string;
   readonly activeLaunch: () => Launch;
   readonly directory: string;
   readonly token: string;
-}
-
-function resolveActiveContract(base: string, launch: Launch) {
-  const contract = activeContract(base, launch);
-  if (contract === undefined) {
-    delete process.env.PI_SUBAGENT_SCRATCH_DIR;
-    return;
-  }
-  const scratchDir = ensureScratchDirectory(base, launch);
-  process.env.PI_SUBAGENT_SCRATCH_DIR = scratchDir;
-  const latest = readContractAmendments(base, launch).at(-1);
-  const latestAmendmentSummary =
-    latest === undefined ? undefined : formatContractAmendmentSummary(latest);
-  return { contract, scratchDir, latestAmendmentSummary };
 }
 
 const CHILD_ROLE_SECTION = [
@@ -65,63 +43,44 @@ const CHILD_ROLE_SECTION = [
   "Execute only the assigned task within its stated scope and stop boundary. Do not merge PRs, deploy, push, modify unrelated files, or mutate shared state unless explicitly tasked.",
 ].join("\n");
 
+const READ_ONLY_SECTION =
+  "This child is read-only (`readOnly: true`): repository file-editing tools are disabled. Do not edit files.";
+
 function guard(pi: ExtensionAPI, options: GuardOptions): void {
-  const { base, activeLaunch, directory, token } = options;
+  const { activeLaunch, directory, token } = options;
   pi.on("before_agent_start", (event) => {
-    const resolved = resolveActiveContract(base, activeLaunch());
     const { sections } = event.systemPromptOptions;
-    sections.delegation_role = CHILD_ROLE_SECTION;
-    if (resolved === undefined) {
-      delete sections.delegation_contract;
-      return;
-    }
-    sections.delegation_contract = formatContractSection(resolved.contract, {
-      scratchDir: resolved.scratchDir,
-      latestAmendmentSummary: resolved.latestAmendmentSummary,
-    });
+    sections.delegation_role =
+      activeLaunch().readOnly === true
+        ? `${CHILD_ROLE_SECTION}\n${READ_ONLY_SECTION}`
+        : CHILD_ROLE_SECTION;
   });
   pi.on("tool_call", (event) => {
     if (event.toolName === "delegate" || event.toolName === "agent_runs") {
       return { block: true, reason: "Only a main session may delegate or control children." };
     }
-    const launch = activeLaunch();
-    const resolved = resolveActiveContract(base, launch);
-    if (resolved !== undefined) {
-      const scopeViolation = checkToolCallScope(
-        { cwd: launch.cwd, scope: resolved.contract.scope, scratchDir: resolved.scratchDir },
-        event.toolName,
-        event.input,
-      );
-      if (scopeViolation !== undefined) {
-        return { block: true, reason: scopeViolation };
-      }
+    if (activeLaunch().readOnly === true && EDIT_TOOLS.has(event.toolName)) {
+      return {
+        block: true,
+        reason: "This child is read-only (readOnly: true); file-editing tools are disabled.",
+      };
     }
     rewriteLocalBash(pi, event, directory, token);
     return;
   });
 }
-/**
- * Fork-only: settings with `toolExposure`, how the model reaches each tool. Official Pi has
- * no such setting, so its children keep the exposure every tool registered with.
- */
+
 type Exposing = SettingsManager & {
   readonly applyOverrides: (overrides: { toolExposure: UnknownRecord }) => void;
 };
 function exposing(settings: SettingsManager): settings is Exposing {
   return typeof Reflect.get(settings, "getToolExposure") === "function";
 }
-/**
- * Gives this child the `subagents.toolExposure` map of its settings files on top of its own
- * `toolExposure`, so a tool children rarely need can stay out of their requests and still be
- * reached through `tool_search` and codemode. The host merges and validates the entries as it
- * does for one more settings layer. Loading the settings drops overrides, so this must follow
- * the creation of the services. An exact restore then puts back the settings it saved.
- */
+
 function exposeChildTools(settings: SettingsManager): void {
   if (!exposing(settings)) {
     return;
   }
-  // The project file last: its entries win and its patterns match first, as in `toolExposure`.
   for (const layer of [settings.getGlobalSettings(), settings.getProjectSettings()]) {
     const toolExposure = recordAt(recordAt(layer, "subagents"), "toolExposure");
     if (toolExposure !== undefined) {
@@ -129,24 +88,23 @@ function exposeChildTools(settings: SettingsManager): void {
     }
   }
 }
+
 interface ChildHooks {
   readonly directory: string;
   readonly token: string;
   readonly activeLaunch?: (() => Launch) | undefined;
-  /** Exact parked working state; absent means the saved journal alone. */
   readonly saved: WorkingState | undefined;
   readonly started: (pi: ExtensionAPI, ctx: ExtensionContext) => void;
   readonly tool: (event: ToolEvent) => void;
   readonly sentinel?: OverseerSentinel | undefined;
 }
-/** One native child session with this package's child policy and live-view hooks. */
+
 export function childRuntime(
   sdk: Awaited<ReturnType<typeof loadSDK>>,
   launch: Launch,
   hooks: ChildHooks,
 ): CreateAgentSessionRuntimeFactory {
   return async ({ sessionManager }) => {
-    // Exact restore keeps settings, tool policy and accepted queues; it never replays input.
     const restore = hooks.saved ? { workingSession: hooks.saved } : {};
     if (!fs.existsSync(launch.sessionFile)) {
       throw new Error("Missing saved native session; refusing to create another.");
@@ -173,7 +131,6 @@ export function childRuntime(
           ...(jobs ? [{ name: "background-command", builtin: true, factory: jobs }] : []),
           (pi) => {
             guard(pi, {
-              base: path.dirname(hooks.directory),
               activeLaunch: hooks.activeLaunch ?? (() => launch),
               directory: hooks.directory,
               token: hooks.token,
@@ -182,7 +139,6 @@ export function childRuntime(
             pi.on("session_start", (_event, ctx) => {
               hooks.started(pi, ctx);
             });
-            // Sparse tool lifecycle keeps the live view's tools even while nobody watches.
             pi.on("tool_execution_start", hooks.tool);
             pi.on("tool_execution_update", hooks.tool);
             pi.on("tool_execution_end", hooks.tool);
@@ -190,8 +146,6 @@ export function childRuntime(
         ],
       },
     });
-    // The SDK has no disposal for services created before a session: if a check below
-    // throws, their cleanup owner never materializes and this actor exits instead.
     exposeChildTools(services.settingsManager);
     const diagnostics = services.resourceLoader.getExtensions().errors;
     if (diagnostics.length > 0) {

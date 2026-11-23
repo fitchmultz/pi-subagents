@@ -4,9 +4,8 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AccountingState, Launch, Result } from "./contracts.ts";
 import { errorText } from "./host.ts";
-import { activeContract } from "./overseer-contract.ts";
 import { activeOverseer } from "./overseer.ts";
-import { captureRepoSnapshot, launchPoint, ownChanges, type ReviewPoint } from "./overseer-git.ts";
+import { captureSnapshot, diffSnapshots, type TreeSnapshot } from "./overseer-diff.ts";
 import { harnessExcludePaths } from "./overseer-sentinel.ts";
 import { runDirectory, write } from "./storage.ts";
 import { accountingFields, type UsageIndex } from "./usage.ts";
@@ -24,7 +23,7 @@ function completionStatus(
   }
   return "completed";
 }
-/** The recorded failure: the launch error, the model's error, or the missing terminal message. */
+
 const failureReason = (
   error: string | undefined,
   message: AssistantMessage | undefined,
@@ -32,7 +31,7 @@ const failureReason = (
   error ??
   message?.errorMessage ??
   (message ? undefined : "Native run produced no terminal assistant message.");
-/** The run's last assistant message: every entry after `baseline` belongs to the run. */
+
 function response(session: AgentSession, baseline: ReadonlySet<string>) {
   const terminal = session.sessionManager
     .getBranch()
@@ -45,6 +44,7 @@ function response(session: AgentSession, baseline: ReadonlySet<string>) {
   }
   return { id: terminal.id, message: terminal.message };
 }
+
 function output(message: AssistantMessage | undefined): string {
   return (
     message?.content
@@ -53,40 +53,35 @@ function output(message: AssistantMessage | undefined): string {
       .join("\n") ?? ""
   );
 }
+
 export interface EndedRun {
   readonly session: AgentSession;
   readonly baseline: ReadonlySet<string>;
-  /** Every run of this conversation shares one native journal; later runs read only its suffix. */
   readonly accounting: UsageIndex;
   readonly stopping: boolean;
   readonly error?: string | undefined;
-  readonly repoBaseline?: ReviewPoint | undefined;
+  readonly repoBaseline?: TreeSnapshot | undefined;
 }
-export function captureOverseerBaseline(base: string, launch: Launch): ReviewPoint | undefined {
-  const contract = activeContract(base, launch);
-  return activeOverseer(base, launch).enabled || contract !== undefined
-    ? launchPoint(launch.cwd, {
-        baseBranch: contract?.baseBranch,
-        excludePaths: harnessExcludePaths(base, launch),
-      })
+
+export function captureOverseerBaseline(base: string, launch: Launch): TreeSnapshot | undefined {
+  return activeOverseer(base, launch).enabled
+    ? captureSnapshot(launch.cwd, harnessExcludePaths(base, launch))
     : undefined;
 }
+
 function detectedChanges(
   base: string,
   launch: Launch,
-  baseline: ReviewPoint | undefined,
+  baseline: TreeSnapshot | undefined,
 ): string[] | undefined {
   if (baseline === undefined) {
     return undefined;
   }
-  const excludePaths = harnessExcludePaths(base, launch);
-  const current = captureRepoSnapshot(launch.cwd, {
-    baseBranch: activeContract(base, launch)?.baseBranch,
-    excludePaths,
-  });
-  const changed = ownChanges(launch.cwd, baseline, current, excludePaths).files;
+  const current = captureSnapshot(launch.cwd, harnessExcludePaths(base, launch));
+  const changed = diffSnapshots(launch.cwd, baseline, current, 0).files;
   return changed.length > 0 ? changed.slice(0, 100) : undefined;
 }
+
 function usage(launch: Launch, run: EndedRun, terminal: string | undefined): AccountingState {
   try {
     return {
@@ -104,11 +99,7 @@ function usage(launch: Launch, run: EndedRun, terminal: string | undefined): Acc
         };
   }
 }
-/**
- * The run's terminal fallback result, written only when nothing canonical exists yet.
- * The result publishes first; an existing output.txt is never destroyed: a failed save can
- * leave real output on disk with no canonical result beside it.
- */
+
 export function saveTerminalResult(
   base: string,
   launch: Launch,
@@ -130,7 +121,7 @@ export function saveTerminalResult(
     fs.writeFileSync(path.join(directory, "output.txt"), "", { mode: 0o600 });
   }
 }
-/** Publishes the run's canonical result and the text of its last assistant message. */
+
 export function saveResult(base: string, launch: Launch, run: EndedRun): void {
   const terminal = response(run.session, run.baseline);
   const message = terminal?.message;

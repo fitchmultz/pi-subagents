@@ -11,39 +11,13 @@ export const thinkingSchema = Type.Union([
   Type.Literal("xhigh"),
   Type.Literal("max"),
 ]);
-export const delegationContractSchema = Type.Object({
-  scope: Type.Array(Type.String({ minLength: 1 })),
-  verification: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-  baseBranch: Type.Optional(Type.String({ minLength: 1 })),
-  requiredPrimitives: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-  nonGoals: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-});
-export type DelegationContract = Static<typeof delegationContractSchema>;
-export const contractFieldSchema = Type.Union([
-  Type.Literal("scope"),
-  Type.Literal("verification"),
-  Type.Literal("baseBranch"),
-  Type.Literal("requiredPrimitives"),
-  Type.Literal("nonGoals"),
-]);
-export type ContractField = Static<typeof contractFieldSchema>;
-export const contractAmendmentSchema = Type.Object({
-  at: Type.Number(),
-  contract: delegationContractSchema,
-  changedFields: Type.Array(contractFieldSchema, { minItems: 1 }),
-  previous: Type.Optional(delegationContractSchema),
-});
-export type ContractAmendment = Static<typeof contractAmendmentSchema>;
-export const contractStateSchema = Type.Object({
-  current: delegationContractSchema,
-  history: Type.Array(contractAmendmentSchema, { minItems: 1 }),
-});
-export type ContractState = Static<typeof contractStateSchema>;
+
 export const overseerLaunchSchema = Type.Object({
   enabled: Type.Literal(true),
   judge: Type.Optional(Type.String({ minLength: 1 })),
 });
 export type OverseerLaunch = Static<typeof overseerLaunchSchema>;
+
 export const overseerLiveStateSchema = Type.Object({
   version: Type.Literal(1),
   enabled: Type.Boolean(),
@@ -51,70 +25,71 @@ export const overseerLiveStateSchema = Type.Object({
   updatedAt: Type.Number(),
 });
 export type OverseerLiveState = Static<typeof overseerLiveStateSchema>;
-export const escalationKindSchema = Type.Union([
-  Type.Literal("scope_violation"),
-  Type.Literal("branch_violation"),
-  Type.Literal("primitive_violation"),
-  Type.Literal("loop_violation"),
+
+export const skepticFindingKindSchema = Type.Union([
+  Type.Literal("intent_drift"),
+  Type.Literal("invented_constraint"),
+  Type.Literal("dropped_behavior"),
+  Type.Literal("custom_plumbing"),
+  Type.Literal("weakened_test"),
+  Type.Literal("bug"),
 ]);
+export type SkepticFindingKind = Static<typeof skepticFindingKindSchema>;
+
+export const skepticFindingSchema = Type.Object({
+  kind: skepticFindingKindSchema,
+  file: Type.String({ minLength: 1 }),
+  excerpt: Type.String({ minLength: 1 }),
+  why: Type.String({ minLength: 1 }),
+  blocking: Type.Boolean(),
+});
+export type SkepticFinding = Static<typeof skepticFindingSchema>;
+
+export const checkpointKindSchema = Type.Union([
+  Type.Literal("shape_check"),
+  Type.Literal("skeptic"),
+  Type.Literal("final_diff"),
+  Type.Literal("tool_errors"),
+]);
+export type CheckpointKind = Static<typeof checkpointKindSchema>;
+
+export const toolErrorTurnSchema = Type.Object({
+  messageEntryId: Type.String(),
+  tools: Type.Array(
+    Type.Object({
+      toolName: Type.String(),
+      toolCallId: Type.String(),
+      isError: Type.Boolean(),
+      repeatedFrom: Type.Optional(Type.String()),
+    }),
+  ),
+});
+export type ToolErrorTurn = Static<typeof toolErrorTurnSchema>;
+
 export const escalationSchema = Type.Object({
   id: Type.String(),
   runId: Type.String(),
   owner: Type.String(),
   at: Type.Number(),
-  /** The number of this pause in the run. Named for what earlier versions took it to mean. */
-  strikes: Type.Integer({ minimum: 1 }),
-  kind: escalationKindSchema,
+  pauseNumber: Type.Integer({ minimum: 1 }),
+  kind: checkpointKindSchema,
   summary: Type.String(),
-  /** A choice-only judge asked for review. `kind` is its category, not a confirmed finding. */
-  classifierReview: Type.Optional(
-    Type.Object({
-      instruction: Type.String(),
-      source: Type.Union([Type.Literal("prompt"), Type.Literal("guidance")]),
-    }),
-  ),
+  model: Type.Optional(Type.String({ minLength: 1 })),
+  findings: Type.Optional(Type.Array(skepticFindingSchema)),
   changedFiles: Type.Array(Type.String()),
   diffExcerpt: Type.String(),
   diffDigest: Type.String(),
-  // A parent and a running child can be on different package versions: a child from before
-  // these fields existed writes none of them.
-  /** Where `changedFiles`, `stat` and `diffExcerpt` are measured from. */
-  since: Type.Optional(Type.Union([Type.Literal("launch"), Type.Literal("approval")])),
-  /** The changes since `since`, one `added<TAB>removed<TAB>file` line per file as `git diff --numstat` counts them. Files are spelled as in `changedFiles`. */
+  since: Type.Union([Type.Literal("launch"), Type.Literal("checkpoint")]),
   stat: Type.Optional(Type.String()),
-  /** Prints the whole diff when `diffExcerpt` is cut. */
   diffCommand: Type.Optional(Type.String()),
-  /** Files changed since the last state that passed the checks, when that is later than `since`. */
-  unchecked: Type.Optional(Type.Array(Type.String())),
-  /** Files with work that `stat` and `diffExcerpt` do not show: committed on history that HEAD left, or dropped by a checkout. */
-  leftBehind: Type.Optional(Type.Array(Type.String())),
-  /** Files changed earlier in the run that the overseer approved. */
-  approved: Type.Optional(Type.Array(Type.String())),
-  /** Old children use this name for earlier pauses answered with a steer. */
-  corrections: Type.Optional(Type.Integer({ minimum: 0 })),
-  /** How many earlier pauses the overseer answered with a steer. */
   steers: Type.Optional(Type.Integer({ minimum: 0 })),
-  /** Finalized tool outcomes in each turn that triggered an error review. No args or output. */
-  toolErrorTurns: Type.Optional(
-    Type.Array(
-      Type.Object({
-        messageEntryId: Type.String(),
-        tools: Type.Array(
-          Type.Object({
-            toolName: Type.String(),
-            toolCallId: Type.String(),
-            isError: Type.Boolean(),
-            repeatedFrom: Type.Optional(Type.String()),
-          }),
-        ),
-      }),
-    ),
-  ),
+  toolErrorTurns: Type.Optional(Type.Array(toolErrorTurnSchema)),
 });
 export type Escalation = Static<typeof escalationSchema>;
+
 export const escalationResolutionSchema = Type.Object({
   escalationId: Type.String(),
-  verdict: Type.Union([Type.Literal("steered"), Type.Literal("approved"), Type.Literal("stopped")]),
+  verdict: Type.Union([Type.Literal("approved"), Type.Literal("steered"), Type.Literal("stopped")]),
   diffDigest: Type.Optional(Type.String()),
   steer: Type.Optional(
     Type.Object({
@@ -125,37 +100,50 @@ export const escalationResolutionSchema = Type.Object({
   at: Type.Number(),
 });
 export type EscalationResolution = Static<typeof escalationResolutionSchema>;
-/**
- * Saved by a supervised child while no judge has answered for its latest work, and removed when
- * a judge answers for that work or the work is accepted. The child does not wait for an answer
- * to it.
- */
+
+/** Non-blocking grounded findings published while the child continues working. */
+export const overseerNoteSchema = Type.Object({
+  id: Type.String(),
+  runId: Type.String(),
+  owner: Type.String(),
+  at: Type.Number(),
+  model: Type.String({ minLength: 1 }),
+  findings: Type.Array(skepticFindingSchema, { minItems: 1 }),
+});
+export type OverseerNote = Static<typeof overseerNoteSchema>;
+
+export const overseerNotesSchema = Type.Object({
+  version: Type.Literal(1),
+  notes: Type.Array(overseerNoteSchema),
+});
+export type OverseerNotes = Static<typeof overseerNotesSchema>;
+
 export const judgeUnavailableSchema = Type.Object({
   at: Type.Number(),
   summary: Type.String(),
 });
 export type JudgeUnavailable = Static<typeof judgeUnavailableSchema>;
+
 export const judgeFailureSchema = Type.Object({
-  classifier: Type.String({ minLength: 1 }),
+  model: Type.String({ minLength: 1 }),
   reason: Type.String({ minLength: 1 }),
 });
 export type JudgeFailure = Static<typeof judgeFailureSchema>;
-export const judgeVerdictSchema = Type.Union([
-  Type.Literal("compliant"),
-  Type.Literal("scope_violation"),
-  Type.Literal("primitive_violation"),
-]);
-export type JudgeVerdict = Static<typeof judgeVerdictSchema>;
+
 const judgeCheckpointFields = {
   at: Type.Number(),
   judge: Type.String({ minLength: 1 }),
   failed: Type.Optional(Type.Array(judgeFailureSchema, { minItems: 1 })),
 };
+
 export const judgeCheckpointSchema = Type.Union([
   Type.Object({
     ...judgeCheckpointFields,
-    outcome: judgeVerdictSchema,
-    classifier: Type.String({ minLength: 1 }),
+    outcome: Type.Union([Type.Literal("ok"), Type.Literal("flagged"), Type.Literal("notes")]),
+    model: Type.String({ minLength: 1 }),
+    blockingCount: Type.Integer({ minimum: 0 }),
+    noteCount: Type.Integer({ minimum: 0 }),
+    droppedUngrounded: Type.Integer({ minimum: 0 }),
   }),
   Type.Object({
     ...judgeCheckpointFields,
@@ -164,19 +152,13 @@ export const judgeCheckpointSchema = Type.Union([
   }),
 ]);
 export type JudgeCheckpoint = Static<typeof judgeCheckpointSchema>;
-/** Recorded judge checkpoint evaluations for a run, oldest first. */
+
 export const judgeCheckpointsSchema = Type.Object({
   version: Type.Literal(1),
   checkpoints: Type.Array(judgeCheckpointSchema, { minItems: 1 }),
 });
 export type JudgeCheckpoints = Static<typeof judgeCheckpointsSchema>;
-export const overseerReviewSchema = Type.Object({
-  runId: Type.String(),
-  verdict: Type.Union([Type.Literal("approved"), Type.Literal("changes_requested")]),
-  summary: Type.String({ minLength: 1 }),
-  at: Type.Number(),
-});
-export type OverseerReview = Static<typeof overseerReviewSchema>;
+
 export const launchSchema = Type.Object({
   version: Type.Literal(1),
   id: Type.String(),
@@ -196,12 +178,13 @@ export const launchSchema = Type.Object({
   thinking: thinkingSchema,
   trusted: Type.Boolean(),
   name: Type.Optional(Type.String()),
-  contract: Type.Optional(delegationContractSchema),
-  scratchDir: Type.Optional(Type.String({ minLength: 1 })),
+  readOnly: Type.Optional(Type.Boolean()),
+  ownerContext: Type.Optional(Type.String({ minLength: 1 })),
   overseer: Type.Optional(overseerLaunchSchema),
   createdAt: Type.Number(),
 });
 export type Launch = Static<typeof launchSchema>;
+
 export const processSchema = Type.Object({
   pid: Type.Integer({ minimum: 1 }),
   identity: Type.String(),
@@ -215,12 +198,14 @@ export const processSchema = Type.Object({
   ),
 });
 export type ProcessIdentity = Static<typeof processSchema>;
+
 export const attachmentSchema = Type.Object({
   ...Type.Pick(processSchema, ["pid", "identity", "clock"]).properties,
   generation: Type.String(),
   attached: Type.Boolean(),
 });
 export type Attachment = Static<typeof attachmentSchema>;
+
 export const usageSchema = Type.Object({
   input: Type.Number({ minimum: 0 }),
   output: Type.Number({ minimum: 0 }),
@@ -237,6 +222,7 @@ export const usageSchema = Type.Object({
     total: Type.Number({ minimum: 0 }),
   }),
 });
+
 export const contributionsSchema = Type.Array(
   Type.Object({
     id: Type.String({ minLength: 1 }),
@@ -246,6 +232,7 @@ export const contributionsSchema = Type.Array(
   }),
 );
 export type Contribution = Static<typeof contributionsSchema>[number];
+
 export const resultSchema = Type.Object({
   id: Type.String(),
   owner: Type.String(),
@@ -264,6 +251,7 @@ export const resultSchema = Type.Object({
   ),
 });
 export type Result = Static<typeof resultSchema>;
+
 export type AccountingState =
   | { readonly kind: "unrecorded"; readonly terminalEntryId: string | undefined }
   | {
@@ -281,6 +269,7 @@ export type AccountingState =
       readonly error: string;
       readonly terminalEntryId: string | undefined;
     };
+
 export const commandMetadataSchema = Type.Object({
   id: Type.String(),
   runId: Type.String(),
@@ -299,14 +288,16 @@ export const commandSchema = Type.Union([
   }),
 ]);
 export type Command = Static<typeof commandSchema>;
+
 export const successorSchema = Type.Object({ id: Type.String() });
+
 /** The unfinished background work an idle child session reported; its run stays open for it. */
 export const waitingSchema = Type.Object({
   since: Type.Number(),
   work: Type.Array(Type.Object({ id: Type.String(), description: Type.String() })),
 });
 export type Waiting = Static<typeof waitingSchema>;
-/** Authority to restore exact working state, valid only after the named actor has exited. */
+
 /** Exact parked authority: one exited generation's state bytes for this session and leaf. */
 export const parkedSchema = Type.Object({
   token: Type.String(),
@@ -316,6 +307,7 @@ export const parkedSchema = Type.Object({
   leafId: Type.Union([Type.String(), Type.Null()]),
 });
 export type Parked = Static<typeof parkedSchema>;
+
 export const wakeFailureSchema = Type.Object({
   at: Type.Number(),
   reason: Type.String(),
@@ -327,6 +319,7 @@ export const wakeFailureSchema = Type.Object({
   ),
 });
 export type WakeFailure = Static<typeof wakeFailureSchema>;
+
 export const readySchema = Type.Object({ token: Type.String() });
 export const exitSchema = Type.Object({
   pid: Type.Integer(),
@@ -335,6 +328,7 @@ export const exitSchema = Type.Object({
   at: Type.Number(),
 });
 export type Exit = Static<typeof exitSchema>;
+
 export const admissionSchema = Type.Object({
   id: Type.String(),
   action: Type.String(),

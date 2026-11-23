@@ -447,9 +447,6 @@ export async function executeAgyIntercomTool(
   if (invalid) {
     return invalid;
   }
-  if (params.contract !== undefined) {
-    return toolError("Child contract amendments are not supported from agy sessions.");
-  }
   let active: IntercomTransport;
   try {
     active = await peer.ensureConnected();

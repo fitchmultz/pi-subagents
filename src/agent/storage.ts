@@ -9,8 +9,6 @@ import {
   launchSchema,
   successorSchema,
   type Command,
-  type ContractState,
-  type DelegationContract,
   type Launch,
   type OverseerLaunch,
 } from "./contracts.ts";
@@ -20,6 +18,7 @@ import { notifyInventory } from "./inventory-events.ts";
 export function missing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
+
 export function read<T extends TSchema>(
   file: string,
   schema: T,
@@ -37,7 +36,7 @@ export function read<T extends TSchema>(
   Assert(schema, value);
   return value;
 }
-/** Publish complete bytes without replacing a winner, even where Android denies hard links. */
+
 function publishExclusive(temp: string, file: string): boolean {
   try {
     fs.linkSync(temp, file);
@@ -46,11 +45,11 @@ function publishExclusive(temp: string, file: string): boolean {
     if (!["EACCES", "EPERM", "ENOTSUP"].some((code) => hasErrorCode(error, code))) {
       throw error;
     }
-    // The immutable, private backing file must outlive its atomic no-clobber symlink.
     fs.symlinkSync(path.basename(temp), file);
     return true;
   }
 }
+
 export function write(file: string, value: unknown, exclusive = false): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${randomUUID()}.${exclusive ? "data" : "tmp"}`;
@@ -74,18 +73,22 @@ export function write(file: string, value: unknown, exclusive = false): void {
     }
   }
 }
+
 export function safeId(id: string): string {
   if (!/^[a-zA-Z0-9_-]{1,128}$/.test(id)) {
     throw new Error("Invalid run/session ID.");
   }
   return id;
 }
+
 export function ownerDirectory(agentDir: string, owner: string): string {
   return path.join(agentDir, "sessions", "agent-runs", safeId(owner));
 }
+
 export function runDirectory(base: string, id: string): string {
   return path.join(base, safeId(id));
 }
+
 export function launchAt(base: string, id: string, owner: string): Launch {
   const launch = read(path.join(runDirectory(base, id), "launch.json"), launchSchema);
   if (!launch || launch.id !== id || launch.owner !== owner) {
@@ -93,23 +96,20 @@ export function launchAt(base: string, id: string, owner: string): Launch {
   }
   return launch;
 }
+
 export interface SuccessorOptions {
-  readonly contract?: DelegationContract | undefined;
-  readonly scratchDir?: string | undefined;
-  readonly contractState?: ContractState | undefined;
   /** Overrides inherited overseer config on the successor (`null` clears it). */
   readonly overseer?: OverseerLaunch | null | undefined;
 }
+
 function buildSuccessorLaunch(input: {
-  readonly base: string;
   readonly launch: Launch;
   readonly id: string;
   readonly prompt: string;
   readonly options: SuccessorOptions | undefined;
 }): Launch {
-  const { base, launch, id, prompt, options } = input;
-  const { scratchDir: _persistedScratchDir, overseer: inheritedOverseer, ...rest } = launch;
-  const contract = options?.contract ?? launch.contract;
+  const { launch, id, prompt, options } = input;
+  const { overseer: inheritedOverseer, ...rest } = launch;
   const overseer =
     options?.overseer === undefined ? inheritedOverseer : (options.overseer ?? undefined);
   return {
@@ -117,13 +117,11 @@ function buildSuccessorLaunch(input: {
     id,
     predecessor: launch.id,
     prompt,
-    ...(contract !== undefined ? { contract } : {}),
-    ...(contract !== undefined ? { scratchDir: scratchDirectory(base, launch) } : {}),
     ...(overseer !== undefined ? { overseer } : {}),
     createdAt: Date.now(),
   };
 }
-/** Claims the single successor of a saved run; undefined when another caller already has. */
+
 export function successor(
   base: string,
   launch: Launch,
@@ -131,12 +129,9 @@ export function successor(
   options?: SuccessorOptions,
 ): Launch | undefined {
   const id = randomUUID();
-  const next = buildSuccessorLaunch({ base, launch, id, prompt, options });
+  const next = buildSuccessorLaunch({ launch, id, prompt, options });
   fs.mkdirSync(runDirectory(base, id), { mode: 0o700 });
   write(path.join(runDirectory(base, id), "launch.json"), next, true);
-  if (options?.contractState !== undefined) {
-    write(path.join(runDirectory(base, id), "contract.json"), options.contractState, true);
-  }
   try {
     write(path.join(runDirectory(base, launch.id), "successor.json"), { id }, true);
   } catch (error) {
@@ -148,6 +143,7 @@ export function successor(
   }
   return next;
 }
+
 export function latest(base: string, initial: Launch): Launch {
   const seen = new Set<string>();
   let launch = initial;
@@ -163,18 +159,11 @@ export function latest(base: string, initial: Launch): Launch {
     launch = launchAt(base, next.id, initial.owner);
   }
 }
+
 export function conversation(base: string, launch: Launch): string {
   return runDirectory(base, launch.rootId);
 }
-export function scratchDirectory(base: string, launch: Pick<Launch, "rootId">): string {
-  return path.join(runDirectory(base, launch.rootId), "scratch");
-}
-export function ensureScratchDirectory(base: string, launch: Pick<Launch, "rootId">): string {
-  const dir = scratchDirectory(base, launch);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return dir;
-}
-/** Metadata only: replacing command bytes invalidates the actor's parsed-command cache. */
+
 export function commandIdentity(file: string): string | undefined {
   try {
     const stat = fs.statSync(file, { bigint: true });
@@ -186,6 +175,7 @@ export function commandIdentity(file: string): string | undefined {
     throw error;
   }
 }
+
 export function enqueue(
   base: string,
   launch: Launch,
@@ -212,6 +202,7 @@ export function enqueue(
   }
   return id;
 }
+
 export function list(base: string): string[] {
   try {
     return fs

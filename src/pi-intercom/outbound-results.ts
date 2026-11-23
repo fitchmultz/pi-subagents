@@ -1,6 +1,5 @@
 import type { SendResult } from "./types.ts";
 import type { IntercomToolParams, ToolResultLike } from "./runtime-types.ts";
-import type { ChildContractAmendmentResult } from "../shared/child-contract.ts";
 import { errorMessage } from "./validation.ts";
 import {
   failureDetails,
@@ -98,45 +97,18 @@ export function askFailure(
     ),
   );
 }
-function runLabel(amended: ChildContractAmendmentResult): string {
-  return amended.name === undefined ? amended.runId : `${amended.runId} (${amended.name})`;
-}
-
-function amendmentDetails(
-  amended: ChildContractAmendmentResult,
-): Readonly<Record<string, unknown>> {
-  return {
-    contractAmended: {
-      runId: amended.runId,
-      changedFields: amended.amendment.changedFields,
-      contract: amended.amendment.contract,
-      summary: amended.summary,
-    },
-  };
-}
-
-export function replySent(
-  sender: string,
-  replyTo: string,
-  result: SendResult,
-  amended?: ChildContractAmendmentResult,
-): ToolResultLike {
+export function replySent(sender: string, replyTo: string, result: SendResult): ToolResultLike {
   const queued = result.queued === true;
   const base = queued
     ? `Reply queued for ${sender} (${result.reason ?? "queued"})`
     : `Reply sent to ${sender}`;
-  const suffix =
-    amended === undefined
-      ? ""
-      : `\nDelegation contract amended for run ${runLabel(amended)}: ${amended.summary}`;
-  return toolText(`${base}${suffix}`, {
+  return toolText(base, {
     messageId: result.id,
     accepted: result.accepted,
     delivered: result.delivered,
     queued,
     replyTo,
     reasonCode: queued ? "message_queued" : "reply_sent",
-    ...(amended !== undefined ? amendmentDetails(amended) : {}),
   });
 }
 
@@ -144,14 +116,9 @@ export function replyDeliveryFailure(
   sender: string,
   replyTo: string,
   result: SendResult,
-  amended?: ChildContractAmendmentResult,
 ): ToolResultLike {
-  const suffix =
-    amended === undefined
-      ? ""
-      : ` Delegation contract amendment was persisted for run ${runLabel(amended)}: ${amended.summary}.`;
   return toolError(
-    `Reply to "${sender}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}${suffix}`,
+    `Reply to "${sender}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}`,
     failureDetails(
       "delivery_failed",
       [
@@ -168,7 +135,6 @@ export function replyDeliveryFailure(
         queued: result.queued === true,
         reason: result.reason,
         replyTo,
-        ...(amended !== undefined ? amendmentDetails(amended) : {}),
       },
     ),
   );
@@ -177,7 +143,6 @@ export function replyFailure(
   error: unknown,
   replyTo: string | undefined,
   progress: SendProgress,
-  amended?: ChildContractAmendmentResult,
 ): ToolResultLike {
   const reason = recoveryCode(error, "reply_failed");
   const actions: readonly RecoveryAction[] =
@@ -191,17 +156,12 @@ export function replyFailure(
           },
         ]
       : [{ action: "pending" }, { action: "list" }];
-  const suffix =
-    amended === undefined
-      ? ""
-      : ` Delegation contract amendment was persisted for run ${runLabel(amended)}: ${amended.summary}.`;
   return toolError(
-    `Failed to reply: ${errorMessage(error)}${suffix}`,
+    `Failed to reply: ${errorMessage(error)}`,
     failureDetails(reason, actions, {
       error: true,
       ...((replyTo ?? "") !== "" ? { replyTo } : {}),
       ...sendErrorFacts(error, progress),
-      ...(amended !== undefined ? amendmentDetails(amended) : {}),
     }),
   );
 }
