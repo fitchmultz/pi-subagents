@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import net from "node:net";
+import { basename, dirname } from "node:path";
 import { loadConfig, type IntercomConfig } from "../config.ts";
 import type { IntercomToolParams, ToolResultLike } from "../runtime-types.ts";
 import { toolError } from "../tool-arguments.ts";
@@ -21,7 +22,7 @@ import { AgyPeer, type AgyHookInput, type AgyHookResponse } from "./peer.ts";
 
 const MAX_CONTROL_LINE_BYTES = 256 * 1024;
 const SOCKET_PROBE_TIMEOUT_MS = 250;
-const CONTROL_RECLAIM_INTERVAL_MS = 150;
+const CONTROL_RECLAIM_FALLBACK_MS = 5000;
 const SUBAGENT_TRIGGER_TOOLS = new Set(["invoke_subagent", "swarm", "run_workflow"]);
 
 function isControlSocketLive(socketPath: string): Promise<boolean> {
@@ -133,6 +134,7 @@ export class AgyBridgeHub {
   private ownedSocket: OwnedEndpoint | null = null;
   private socketPath: string | null = null;
   private reclaimTimer: NodeJS.Timeout | null = null;
+  private reclaimWatcher: fs.FSWatcher | null = null;
   private reclaiming = false;
   private closed = false;
 
@@ -154,38 +156,75 @@ export class AgyBridgeHub {
     preparePrivateDir(agyWakeDir());
     const bound = await this.tryBindControlSocket();
     if (bound === null && !this.closed) {
-      this.scheduleControlReclaim();
+      this.watchForControlReclaim();
     }
     return bound;
   }
 
-  private clearReclaimTimer(): void {
+  private stopControlReclaim(): void {
     if (this.reclaimTimer !== null) {
       clearTimeout(this.reclaimTimer);
       this.reclaimTimer = null;
     }
+    if (this.reclaimWatcher !== null) {
+      this.reclaimWatcher.close();
+      this.reclaimWatcher = null;
+    }
   }
 
-  private scheduleControlReclaim(): void {
+  private attemptControlReclaim(): void {
+    if (this.closed || this.server !== null || this.reclaiming) {
+      return;
+    }
+    this.reclaiming = true;
+    void this.tryBindControlSocket()
+      .catch(() => null)
+      .finally(() => {
+        this.reclaiming = false;
+        if (this.closed || this.server !== null) {
+          this.stopControlReclaim();
+        } else {
+          this.scheduleReclaimFallback();
+        }
+      });
+  }
+
+  private scheduleReclaimFallback(): void {
     if (this.closed || this.server !== null || this.reclaimTimer !== null) {
       return;
     }
     this.reclaimTimer = setTimeout(() => {
       this.reclaimTimer = null;
-      if (this.closed || this.server !== null || this.reclaiming) {
-        return;
-      }
-      this.reclaiming = true;
-      void this.tryBindControlSocket()
-        .catch(() => null)
-        .finally(() => {
-          this.reclaiming = false;
-          if (!this.closed && this.server === null) {
-            this.scheduleControlReclaim();
+      this.attemptControlReclaim();
+    }, CONTROL_RECLAIM_FALLBACK_MS);
+    this.reclaimTimer.unref();
+  }
+
+  private watchForControlReclaim(): void {
+    if (this.closed || this.server !== null) {
+      return;
+    }
+    if (this.reclaimWatcher === null) {
+      const targetPath = prepareAgyControlSocketPath(this.lsPid);
+      const targetName = basename(targetPath);
+      try {
+        const watcher = fs.watch(dirname(targetPath), { persistent: false }, (_event, filename) => {
+          if (filename === null || filename === targetName) {
+            this.attemptControlReclaim();
           }
         });
-    }, CONTROL_RECLAIM_INTERVAL_MS);
-    this.reclaimTimer.unref();
+        watcher.on("error", () => {
+          if (this.reclaimWatcher === watcher) {
+            this.reclaimWatcher = null;
+          }
+          watcher.close();
+        });
+        this.reclaimWatcher = watcher;
+      } catch {
+        // Fallback timer still reclaims if directory watching is unavailable.
+      }
+    }
+    this.scheduleReclaimFallback();
   }
 
   private isClosed(): boolean {
@@ -230,6 +269,7 @@ export class AgyBridgeHub {
       server.close();
       return null;
     }
+    this.stopControlReclaim();
     this.server = server;
     this.ownedSocket = captureEndpointIdentity(socketPath) ?? null;
     this.socketPath = socketPath;
@@ -465,7 +505,7 @@ export class AgyBridgeHub {
       return;
     }
     this.closed = true;
-    this.clearReclaimTimer();
+    this.stopControlReclaim();
     const peers = [...this.peers.values()];
     this.peers.clear();
     this.activeMainId = null;
