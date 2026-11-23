@@ -27,16 +27,14 @@ including prior tool results. A forked child still cannot delegate. Optional
 `cwd`, `model`, and `thinking` are explicit launch overrides; do not change global
 auth/model settings to implement an override. `thinking` accepts `off`, `minimal`,
 `low`, `medium`, `high`, `xhigh`, or `max`. Omit it to inherit the parent's effort.
-When `/overseer` mode is active, always supply `contract`; `contract.scope`
-accepts relative literal path prefixes (`src`, `src/foo.ts`), POSIX globs
-(`src/**`, `test/**/*.test.ts`, `packages/*/src/**`, `{src,test}/**`, `*.ts`),
-`["*"]` for any path inside `cwd`, or `[]` for read-only work. Static leading
-directory prefixes must exist inside `cwd` at launch. Runs with a `contract`
-also receive a private per-run scratch directory outside the repo (shown in the
-child's delegation contract and `PI_SUBAGENT_SCRATCH_DIR`) where edit tools are
-allowed for temporary scripts and notes, even under `scope: []`. Omitted `model` and
-`thinking` follow normal `delegate` inheritance unless `/overseer-model`
-(or `subagents.overseer.model`) configures a default child model.
+Pass `readOnly: true` for research, audits, or review children to disable file-editing
+tools (`edit`, `write`, `replace_text`, `write_files`, `apply_patch`; shell commands
+are not OS-sandboxed). When `/overseer` mode is active, no delegation contract is
+required: editing children work freely in plain English (prefer isolated worktrees),
+pause at natural checkpoints (early shape check, grounded skeptic findings with quoted
+hunks, tool-error loops, and pre-ship final diff), and send non-blocking heads-up notes
+for minor smells. Omitted `model` and `thinking` follow normal `delegate` inheritance
+unless `/overseer-model` (or `subagents.overseer.model`) configures a default child model.
 Pi clamps the child's effort to its model capabilities without changing the parent.
 `model:"provider/model:thinking"` uses Pi's native suffix resolver when the host
 exports it; a literal model ID wins before suffix parsing. Without that host API,
@@ -60,27 +58,12 @@ invocation exits after its final turn and stops any remaining children.
   offsets for complete output.
 - A run stays `running` while its child waits on its own background work; `list`
   and `inspect` show what it waits on, and `stop` cancels that work.
-- `continue` takes a complete follow-up `prompt` and keeps the saved child chat.
-  Active work receives guidance; completed work gets an immutable successor.
-  Both keep the child's saved effort, independent of later parent changes. Pass
-  optional `contract` to amend `scope`, `verification`, `baseBranch`,
-  `requiredPrimitives`, or `nonGoals` in place (omitted fields keep their
-  current values; empty `[]`/`""` clears optional fields; invalid scopes fail
-  fast). Live, paused, and successor runs apply the amended contract immediately
-  and `inspect` records the amendment history.
-- `stop` requests termination. Inspect actual process evidence; request acceptance
-  does not prove actor or command exit.
-- `review` with `verdict:"approved"` records the diff and check evidence in
-  `summary` without sending it to the child. Approval releases a pause or
-  satisfies the completion review. On a running or paused child, pass optional
-  `note` with `verdict:"approved"` to record the approval and queue a short
-  steering note for the child in one call (while keeping `summary` review-only;
-  `note` is rejected on settled runs or other actions/verdicts). To send a
-  correction, use `continue` or `review` with `verdict:"changes_requested"` and
-  the instructions as `summary` (optionally with `contract` to amend the contract
-  in the same step). When an owned child asks a scope or contract question over
-  `intercom`, reply with `intercom({action:"reply", ..., contract:{...}})` to
-  persist the amended contract atomically before the reply wakes the child.
+- `continue` steers a live/paused child or resumes a completed child conversation
+  as an immutable successor (keeping its saved effort). On a paused overseer
+  checkpoint, omit `prompt` to approve and resume cleanly, or supply `prompt` to
+  steer with corrections before the child's next turn.
+- `stop` requests termination (and releases any active checkpoint pause). Inspect
+  actual process evidence; request acceptance does not prove actor or command exit.
 
 Use IDs returned by the tools. Runs belong to their native main session, not a
 cwd, project, name, or forked copy of its transcript. Resume the same main for

@@ -1,534 +1,260 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { test as nodeTest, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "node:url";
 import {
-  admissionSchema,
-  escalationResolutionSchema,
   escalationSchema,
-  processSchema,
   resultSchema,
+  type Escalation,
   type Launch,
+  type Result,
 } from "../../src/agent/contracts.ts";
-import { loadSDK } from "../../src/agent/host.ts";
-import { notifications, release } from "../../src/agent/notifications.ts";
 import { resolveActiveEscalation } from "../../src/agent/overseer-pause.ts";
-import { prepareOverseerReviewAction } from "../../src/agent/overseer-review.ts";
-import { ensureActor, ownIdentity, signalProcess } from "../../src/agent/process.ts";
+import { publishAttachment } from "../../src/agent/attachment.ts";
+import { ensureActor, ownIdentity } from "../../src/agent/process.ts";
 import { stopRun } from "../../src/agent/shutdown.ts";
-import {
-  conversation,
-  enqueue,
-  ownerDirectory,
-  read,
-  runDirectory,
-  write,
-} from "../../src/agent/storage.ts";
-import { renderReceipt } from "../../src/agent/view.ts";
+import { enqueue, ownerDirectory, read, runDirectory, write } from "../../src/agent/storage.ts";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
-import { record } from "../support/assertions.ts";
 
-const repo = fileURLToPath(new URL("../../", import.meta.url));
-const providerFixture = path.join(repo, "test/fixtures/overseer-steer-provider.ts");
+const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+const FIXTURE_ENTRY = path.join(REPO_ROOT, "test/fixtures/overseer-steer-provider.ts");
 
-function dead(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return error instanceof Error && "code" in error && error.code === "ESRCH";
-  }
-}
-
-async function until(check: () => boolean, reason: string, timeout = 30_000): Promise<void> {
-  const deadline = Date.now() + timeout;
-  while (!check()) {
-    if (Date.now() > deadline) {
-      throw new Error(`Timed out: ${reason}`);
+async function until<T>(
+  readValue: () => T | undefined,
+  label: string,
+  timeoutMs = 20_000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = readValue();
+    if (value !== undefined) {
+      return value;
     }
-    await delay(20);
+    await delay(40);
   }
+  throw new Error(`Timed out waiting for ${label}`);
 }
 
-async function startChild(
+function makeGitRepo(t: TestContext): string {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-int-"));
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repo });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+  fs.mkdirSync(path.join(repo, "src"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "src", "timer.ts"), "export const INTERVAL_MS = 0;\n");
+  execFileSync("git", ["add", "."], { cwd: repo });
+  execFileSync("git", ["commit", "-q", "-m", "initial"], { cwd: repo });
+  return repo;
+}
+
+async function launchChild(
   t: TestContext,
-  prompt: string,
-  options: { judge?: string; holdBash?: boolean } = {},
+  options: {
+    readonly repo: string;
+    readonly prompt: string;
+    readonly readOnly?: boolean;
+    readonly judge?: string;
+    readonly ownerContext?: string;
+  },
 ) {
-  const root = fs.realpathSync(fs.mkdtempSync("/tmp/ovr-runner-"));
-  // The run works in a linked worktree. The main checkout of the same repository stays on
-  // the base branch, where the provider fixture commits as another session would.
-  const checkout = path.join(root, "checkout");
-  const work = path.join(root, "repo");
-  const agentDir = path.join(root, "agent");
-  fs.mkdirSync(path.join(checkout, "src"), { recursive: true });
-  fs.mkdirSync(agentDir, { recursive: true });
-
-  const git = (...args: string[]) => {
-    execFileSync("git", args, { cwd: checkout, stdio: "ignore" });
-  };
-  git("init", "-b", "main");
-  git("config", "user.email", "test@example.com");
-  git("config", "user.name", "Test");
-  fs.writeFileSync(path.join(checkout, "src", "allowed.ts"), "export const x = 1;\n");
-  fs.writeFileSync(path.join(checkout, "README.md"), "committed\n");
-  git("add", ".");
-  git("commit", "-m", "initial");
-  git("worktree", "add", "-b", "feat/work", work);
-
+  const owner = "owner-int";
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-agent-"));
+  const base = ownerDirectory(agentDir, owner);
+  fs.mkdirSync(base, { recursive: true });
+  const skepticLog = path.join(base, "skeptic.log");
   fs.writeFileSync(
     path.join(agentDir, "settings.json"),
     JSON.stringify({
-      extensions: [providerFixture],
+      extensions: [FIXTURE_ENTRY],
       defaultProjectTrust: "always",
       retry: { enabled: false },
       compaction: { enabled: false },
     }),
   );
 
-  const sdkRoot = nativeSdkRoot();
-  const sdk = await loadSDK(sdkRoot);
-  const owner = "overseer-runner-parent";
+  const prevRepo = process.env.OVERSEER_TEST_REPO;
+  const prevLog = process.env.OVERSEER_TEST_SKEPTIC_LOG;
+  process.env.OVERSEER_TEST_REPO = options.repo;
+  process.env.OVERSEER_TEST_SKEPTIC_LOG = skepticLog;
+  t.after(() => {
+    if (prevRepo === undefined) {
+      delete process.env.OVERSEER_TEST_REPO;
+    } else {
+      process.env.OVERSEER_TEST_REPO = prevRepo;
+    }
+    if (prevLog === undefined) {
+      delete process.env.OVERSEER_TEST_SKEPTIC_LOG;
+    } else {
+      process.env.OVERSEER_TEST_SKEPTIC_LOG = prevLog;
+    }
+  });
+
+  publishAttachment(base, ownIdentity(), randomUUID());
   const id = randomUUID();
-  const base = ownerDirectory(agentDir, owner);
   const dir = runDirectory(base, id);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const manager = sdk.SessionManager.create(work, dir);
+  const manager = SessionManager.create(options.repo, dir);
   const sessionFile = manager.getSessionFile();
   assert.ok(sessionFile !== undefined);
-  fs.writeFileSync(sessionFile, `${JSON.stringify(manager.getHeader())}\n`, {
-    flag: "wx",
-    mode: 0o600,
-  });
+  fs.writeFileSync(sessionFile, `${JSON.stringify(manager.getHeader())}\n`, { mode: 0o600 });
 
   const launch: Launch = {
     version: 1,
     id,
     rootId: id,
-    owner,
-    cwd: work,
+    owner: "owner-int",
+    cwd: options.repo,
     agentDir,
-    sdk: sdkRoot,
-    entry: path.join(repo, "src/agent/index.ts"),
+    sdk: nativeSdkRoot(),
+    entry: path.join(REPO_ROOT, "src/agent/index.ts"),
     sessionFile,
     sessionId: manager.getSessionId(),
-    prompt,
+    prompt: options.prompt,
     context: "fresh",
     provider: "overseer-fixture",
     model: "native-overseer",
     thinking: "off",
     trusted: true,
-    name: "overseer-steer-test",
-    contract: {
-      scope: ["src"],
-      verification: ["echo ok"],
-      baseBranch: "main",
+    ...(options.readOnly === true ? { readOnly: true } : {}),
+    ...(options.ownerContext !== undefined ? { ownerContext: options.ownerContext } : {}),
+    overseer: {
+      enabled: true,
+      judge: options.judge ?? "overseer-skeptic-fixture/grounded-skeptic",
     },
-    overseer: { enabled: true, judge: options.judge ?? "off" },
     createdAt: Date.now(),
   };
   write(path.join(dir, "launch.json"), launch, true);
-  write(path.join(base, "attachment.json"), {
-    ...ownIdentity(),
-    generation: "overseer-runner-test",
-    attached: true,
-  });
-  t.after(async () => {
-    const actor = read(path.join(dir, "actor.lock", "process.json"), processSchema);
-    write(path.join(base, "attachment.json"), {
-      ...ownIdentity(),
-      generation: "overseer-runner-test",
-      attached: false,
-    });
-    if (actor !== undefined) {
-      await until(() => dead(actor.pid), "actor exit after detachment", 10_000).catch(() => {
-        try {
-          process.kill(-actor.pid, "SIGKILL");
-        } catch {
-          // already exited
-        }
-      });
-    }
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-  });
-
-  const judgeInput = path.join(root, "judge-input.json");
-  const toolGate = path.join(root, "tool-gate");
-  const savedEnv = { ...process.env };
-  Object.assign(process.env, {
-    PI_OFFLINE: "1",
-    OVERSEER_TEST_REPO: work,
-    OVERSEER_TEST_SIBLING: checkout,
-    OVERSEER_TEST_JUDGE_INPUT: judgeInput,
-    ...(options.holdBash === true ? { OVERSEER_TEST_TOOL_GATE: toolGate } : {}),
-  });
-  try {
-    await ensureActor(base, launch);
-  } finally {
-    for (const key of Object.keys(process.env)) {
-      if (!(key in savedEnv)) {
-        delete process.env[key];
-      }
-    }
-    Object.assign(process.env, savedEnv);
-  }
-
   enqueue(base, launch, { action: "run" });
-  return { base, dir, judgeInput, launch, owner, sdk, sessionFile, toolGate, work };
+  const controller = new AbortController();
+  t.after(async () => {
+    controller.abort();
+    const notices: string[] = [];
+    try {
+      stopRun(base, launch, undefined, (message) => {
+        notices.push(message);
+      });
+    } catch {
+      // Child already stopped or cleaned up.
+    }
+    await delay(100);
+    fs.rmSync(agentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+  await ensureActor(base, launch, controller.signal);
+
+  const readEsc = (): Escalation | undefined =>
+    read(path.join(dir, "escalation.json"), escalationSchema);
+  const readRes = (): Result | undefined => read(path.join(dir, "result.json"), resultSchema);
+  const readOut = (): string =>
+    fs.existsSync(path.join(dir, "output.txt"))
+      ? fs.readFileSync(path.join(dir, "output.txt"), "utf8")
+      : "";
+  return { base, dir, launch, skepticLog, readEsc, readRes, readOut };
 }
 
 nodeTest(
-  "real Actor sees the pre-settle correction in its next request and the classifier sees the same guidance",
+  "readOnly child blocks write tool calls and completes without overseer pauses",
+  { timeout: 30_000 },
   async (t) => {
-    const { base, dir, judgeInput, launch, owner, sdk, sessionFile, work } = await startChild(
-      t,
-      "Implement feature in src/allowed.ts",
-      { judge: "overseer-choice-fixture/choice-only" },
-    );
-
-    const escPath = path.join(dir, "escalation.json");
-    await until(() => fs.existsSync(escPath), "escalation.json written at agent_before_settle");
-    const esc = read(escPath, escalationSchema);
-    assert.ok(esc !== undefined);
-    assert.equal(esc.kind, "scope_violation");
-    assert.deepEqual(esc.changedFiles, ["README.md"]);
-    t.after(() => release(owner, `escalation:${esc.id}`));
-
-    const guidance = "REVERT_README and replace x with the greeting in src/allowed.ts.";
-    enqueue(base, launch, { action: "steer", prompt: guidance });
-
-    await until(() => {
-      const active = read(escPath, escalationSchema);
-      return active !== undefined && active.id !== esc.id;
-    }, "choice-only result paused for review");
-    const paused = read(escPath, escalationSchema);
-    assert.ok(paused);
-    t.after(() => release(owner, `escalation:${paused.id}`));
-    const journal = sdk.SessionManager.open(sessionFile).getBranch();
-    const correction = journal.filter(
-      (entry) => entry.type === "custom_message" && entry.customType === "overseer-correction",
-    );
-    assert.equal(correction.length, 1);
-    assert.ok(correction[0]?.type === "custom_message");
-    assert.equal(correction[0].content, guidance);
-    const assistant = journal.flatMap((entry) =>
-      entry.type === "message" && entry.message.role === "assistant"
-        ? entry.message.content.flatMap((block) => (block.type === "text" ? [block.text] : []))
-        : [],
-    );
-    assert.deepEqual(assistant, ["DRIFTED", "REVERTED"], "no uncorrected request before the judge");
-    const input: unknown = JSON.parse(fs.readFileSync(judgeInput, "utf8"));
-    assert.partialDeepStrictEqual(input, {
-      state: {
-        taskPrompt: launch.prompt,
-        taskGuidance: [guidance],
-        changedFiles: ["src/allowed.ts"],
-      },
-      questions: { verdict: { type: "choice" } },
+    const repo = makeGitRepo(t);
+    const run = await launchChild(t, {
+      repo,
+      prompt: "READ_ONLY_TRY_WRITE",
+      readOnly: true,
     });
-    const notice = notifications({ sessionManager: sdk.SessionManager.inMemory() }, base, owner)
-      .notices[0]?.message.content;
-    assert.ok(typeof notice === "string");
-    assert.match(notice, /\[Overseer escalation #2 - review needed\]/u);
-    assert.match(notice, /did not identify a specific hunk or rule/u);
-    assert.ok(notice.includes(guidance));
-    assert.match(notice, /^\+export const greeting = 'hi';$/mu);
-    assert.match(notice, /Earlier pauses answered with steering: 1\./u);
-    assert.doesNotMatch(notice, /prefer/u);
-    assert.doesNotMatch(notice, /scope_violation|0\.99/u);
-    resolveActiveEscalation(base, launch, "approved");
-
-    const resultPath = path.join(dir, "result.json");
-    await until(() => fs.existsSync(resultPath), "result.json written after steer");
-    const result = read(resultPath, resultSchema);
-    assert.ok(result !== undefined);
+    const result = await until(run.readRes, "read-only child completion");
     assert.equal(result.status, "completed");
-    // The child reverted the README edit. The other session's commit is not this run's change.
-    assert.deepEqual(result.changedFiles, ["src/allowed.ts"]);
-    assert.equal(
-      execFileSync("git", ["log", "-1", "--format=%s", "main"], { cwd: work, encoding: "utf8" }),
-      "other session\n",
-    );
-
-    assert.equal(
-      fs.readFileSync(sessionFile, "utf8").includes("overseer-sentinel"),
-      false,
-      "a correction needs no generic resume reminder",
-    );
+    assert.equal(run.readOut(), "BLOCKED_AS_EXPECTED");
+    assert.equal(fs.existsSync(path.join(repo, "src", "blocked.ts")), false);
   },
 );
 
 nodeTest(
-  "real Actor reviews mixed tool outcomes and recognizes repeated failed calls",
+  "shape_check pauses on early edits, grounded skeptic flags quoted hunk on pre-ship check, and steer fixes before settle",
+  { timeout: 45_000 },
   async (t) => {
-    const { base, dir, launch, owner, sdk, sessionFile } = await startChild(t, "Check screenshot");
-    const escPath = path.join(dir, "escalation.json");
-    const parent = { sessionManager: sdk.SessionManager.inMemory() };
+    const repo = makeGitRepo(t);
+    const run = await launchChild(t, {
+      repo,
+      prompt: "Implement 60-second timer in src/timer.ts",
+      ownerContext: "Owner rule: use a 60-second check interval.",
+    });
 
-    async function review(lastCall: string) {
-      await until(() => fs.existsSync(escPath), `pause after ${lastCall}`);
-      const escalation = read(escPath, escalationSchema);
-      assert.ok(escalation);
-      t.after(() => release(owner, `escalation:${escalation.id}`));
-      const [notice] = notifications(parent, base, owner).notices;
-      const content = notice?.message.content;
-      assert.ok(typeof content === "string");
-      // The result has already been finalized and journaled when the child pauses.
-      const result = sdk.SessionManager.open(sessionFile).getBranch().at(-1);
-      assert.ok(result?.type === "message" && result.message.role === "toolResult");
-      assert.equal(result.message.toolCallId, lastCall);
-      return { escalation, content };
-    }
+    // 1. Early shape check pause after touching 2 files.
+    const shapeEsc = await until(run.readEsc, "early shape_check pause");
+    assert.equal(shapeEsc.kind, "shape_check");
+    assert.equal(shapeEsc.since, "launch");
+    assert.deepEqual(shapeEsc.changedFiles, ["src/extra.ts", "src/timer.ts"]);
+    assert.ok(resolveActiveEscalation(run.base, run.launch, "approved") !== undefined);
 
-    const first = await review("check-assertion");
-    assert.equal(first.escalation.strikes, 1);
-    assert.match(first.content, /3 consecutive turns reported tool errors/u);
-    assert.match(first.content, /bash \(check-browser\): failed/u);
-    assert.match(first.content, /read \(check-read\): succeeded; bash \(check-selector\): failed/u);
-    assert.match(first.content, /bash \(check-assertion\): failed/u);
-    assert.doesNotMatch(first.content, /no progress|clean progress|same tool and arguments/u);
-    assert.doesNotMatch(JSON.stringify(first.escalation), /private-tool-output|private-arg/u);
-    resolveActiveEscalation(base, launch, "approved");
-    await until(() => !fs.existsSync(escPath), "first pause cleared");
-
-    const second = await review("retry-three");
-    assert.equal(second.escalation.strikes, 2);
-    assert.match(second.content, /read \(retry-one\): failed/u);
-    assert.match(
-      second.content,
-      /read \(retry-two\): failed \(same tool and arguments as retry-one\)/u,
+    // 2. Child edits timer.ts again with 5*60_000 -> grounded skeptic flags exact hunk before settle.
+    const skepticEsc = await until(() => {
+      const e = run.readEsc();
+      return e !== undefined && e.id !== shapeEsc.id ? e : undefined;
+    }, "grounded skeptic pause before settle");
+    assert.equal(skepticEsc.kind, "skeptic");
+    assert.equal(skepticEsc.since, "checkpoint");
+    const findings = skepticEsc.findings ?? [];
+    assert.equal(findings.length, 1);
+    const [firstFinding] = findings;
+    assert.ok(firstFinding !== undefined);
+    assert.equal(firstFinding.file, "src/timer.ts");
+    assert.equal(firstFinding.excerpt, "export const INTERVAL_MS = 5 * 60_000;");
+    assert.ok(
+      fs
+        .readFileSync(run.skepticLog, "utf8")
+        .includes("Owner rule: use a 60-second check interval."),
     );
-    assert.match(
-      second.content,
-      /read \(retry-three\): failed \(same tool and arguments as retry-one\)/u,
-    );
-    assert.match(second.content, /action="stop"/u);
-    assert.doesNotMatch(second.content, /private-tool-output|private-arg|prefer/u);
-    resolveActiveEscalation(base, launch, "approved");
-    const resultPath = path.join(dir, "result.json");
-    await until(() => fs.existsSync(resultPath), "child finished after the second review");
-    assert.equal(read(resultPath, resultSchema)?.status, "completed");
+
+    // 3. Parent steers with correction -> child updates timer.ts to 60_000 before settling.
+    const steer = { id: randomUUID(), prompt: "FIX_INTERVAL_TO_60S" };
+    assert.ok(resolveActiveEscalation(run.base, run.launch, "approved", steer) !== undefined);
+    enqueue(run.base, run.launch, { action: "steer", prompt: steer.prompt, id: steer.id });
+
+    // 4. Final diff check sees the clean 60_000 fix -> parent approves without prompt -> settles cleanly!
+    const finalEsc = await until(() => {
+      const e = run.readEsc();
+      return e !== undefined && e.id !== skepticEsc.id ? e : undefined;
+    }, "final_diff pause after steer");
+    assert.equal(finalEsc.kind, "final_diff");
+    assert.ok(finalEsc.diffExcerpt.includes("INTERVAL_MS = 60_000"));
+    assert.ok(resolveActiveEscalation(run.base, run.launch, "approved") !== undefined);
+
+    const result = await until(run.readRes, "final settled result");
+    assert.equal(result.status, "completed");
+    assert.equal(run.readOut(), "FIXED_AFTER_FINAL_STEER");
+    assert.match(fs.readFileSync(path.join(repo, "src", "timer.ts"), "utf8"), /60_000/u);
   },
 );
 
-for (const scenario of [
-  "correction at turn_end",
-  "approval at turn_end",
-  "stop at settle",
-] as const) {
-  nodeTest(`real Actor: ${scenario}`, async (t) => {
-    const earlier = "Keep x instead of replacing it. Only update its value.";
-    const correction = "REVERT_README and replace x with the greeting in src/allowed.ts.";
-    const { base, dir, judgeInput, launch, sdk, sessionFile, toolGate, work } = await startChild(
-      t,
-      "Implement feature in src/allowed.ts",
-      {
-        holdBash: scenario !== "stop at settle",
-        ...(scenario === "correction at turn_end"
-          ? { judge: "overseer-choice-fixture/choice-only" }
-          : {}),
-      },
-    );
-    if (scenario === "correction at turn_end") {
-      await until(() => fs.existsSync(`${toolGate}.ready`), "bash result at the first turn");
-      const guidance = enqueue(base, launch, { action: "steer", prompt: earlier });
-      const admission = path.join(conversation(base, launch), "admissions", `${guidance}.json`);
-      await until(
-        () => read(admission, admissionSchema)?.state === "accepted",
-        "earlier guidance accepted by the active actor",
-      );
-    }
-    if (scenario !== "stop at settle") {
-      fs.writeFileSync(toolGate, "");
-    }
-    const journal = () => fs.readFileSync(sessionFile, "utf8");
-    const escPath = path.join(dir, "escalation.json");
-    await until(
-      () => fs.existsSync(escPath) || journal().includes("UNSTEERED"),
-      "escalation.json for the drifted run",
-    );
-    assert.equal(
-      journal().includes("UNSTEERED"),
-      false,
-      "ordinary guidance must not release a pause",
-    );
-    const esc = read(escPath, escalationSchema);
-    assert.equal(esc?.kind, "scope_violation");
-    assert.deepEqual(esc.changedFiles, ["README.md"]);
-
-    const resultPath = path.join(dir, "result.json");
-    switch (scenario) {
-      case "stop at settle":
-        stopRun(base, launch, undefined, (error) => assert.fail(error));
-        await until(() => fs.existsSync(resultPath), "paused stop saves the native result");
-        assert.equal(read(resultPath, resultSchema)?.status, "stopped");
-        assert.match(journal(), /DRIFTED/u);
-        assert.doesNotMatch(journal(), /REVERTED|UNSTEERED/u, "stop does not start a request");
-        assert.equal(fs.existsSync(escPath), false, "stopping removes the live pause");
-        break;
-      case "approval at turn_end": {
-        const { review, released } = prepareOverseerReviewAction(base, launch, {
-          action: "review",
-          verdict: "approved",
-          summary: "REVERT_README",
-        });
-        assert.equal(released, true);
-        const receipt = renderReceipt(base, launch, undefined, {
-          receipt: "review",
-          review,
-          released,
-        });
-        assert.match(receipt.content[0]?.text ?? "", /not sent to the child.*continue/u);
-        await until(() => fs.existsSync(resultPath), "approval resumes the native run");
-        const result = read(resultPath, resultSchema);
-        assert.equal(result?.status, "completed");
-        assert.deepEqual(result.changedFiles, ["README.md"]);
-        assert.match(journal(), /UNSTEERED/u, "a model request ran after approval");
-        assert.doesNotMatch(journal(), /REVERT_README/u, "the summary never enters child context");
-        break;
-      }
-      case "correction at turn_end": {
-        enqueue(base, launch, { action: "steer", prompt: correction });
-        await until(
-          () => /REVERTED|UNSTEERED/u.test(journal()),
-          "first model response after the pause",
-        );
-        assert.equal(
-          journal().includes("UNSTEERED"),
-          false,
-          "the next request sees the correction",
-        );
-        await until(() => {
-          const next = read(escPath, escalationSchema);
-          return next !== undefined && next.id !== esc.id;
-        }, "subsequent classifier review published");
-        const classifier = record(record(JSON.parse(fs.readFileSync(judgeInput, "utf8"))).state);
-        const model: unknown = JSON.parse(fs.readFileSync(`${judgeInput}.model`, "utf8"));
-        const messages = sdk.SessionManager.open(sessionFile)
-          .getBranch()
-          .flatMap((entry) => {
-            if (entry.type === "custom_message" && entry.customType === "overseer-correction") {
-              return [entry.content];
-            }
-            if (entry.type === "message" && entry.message.role === "user") {
-              const { content } = entry.message;
-              return typeof content === "string"
-                ? [content]
-                : content.flatMap((block) => (block.type === "text" ? [block.text] : []));
-            }
-            return [];
-          })
-          .filter((text) => text === earlier || text === correction);
-        assert.deepEqual(
-          {
-            model,
-            journal: messages,
-            classifier: classifier.taskGuidance,
-            latest: read(escPath, escalationSchema)?.classifierReview?.instruction,
-            workerEdit: fs.readFileSync(path.join(work, "src", "allowed.ts"), "utf8"),
-          },
-          {
-            model: [earlier, correction],
-            journal: [earlier, correction],
-            classifier: [earlier, correction],
-            latest: correction,
-            workerEdit: "export const greeting = 'hi';\n",
-          },
-        );
-        resolveActiveEscalation(base, launch, "approved");
-        await until(() => fs.existsSync(resultPath), "result.json written after steer");
-        const result = read(resultPath, resultSchema);
-        assert.equal(result?.status, "completed");
-        assert.deepEqual(result.changedFiles, ["src/allowed.ts"]);
-        assert.equal(journal().match(/REVERT_README/gu)?.length, 1, "published once");
-        break;
-      }
-    }
-  });
-}
-
-nodeTest("real Actor keeps pause approval and delivers guidance submitted together", async (t) => {
-  const { base, dir, launch, sdk, sessionFile, toolGate, work } = await startChild(
-    t,
-    "Implement feature in src/allowed.ts",
-    { holdBash: true },
-  );
-  const earlier = "Include the check output in your report.";
-  const correction = "Report which paths were reviewed. Leave the diff unchanged.";
-  const admissions = path.join(conversation(base, launch), "admissions");
-  await until(() => fs.existsSync(`${toolGate}.ready`), "first bash result");
-  const first = enqueue(base, launch, { action: "steer", prompt: earlier });
-  await until(
-    () => read(path.join(admissions, `${first}.json`), admissionSchema)?.state === "accepted",
-    "ordinary guidance admitted before the pause",
-  );
-  fs.writeFileSync(toolGate, "");
-
-  const escPath = path.join(dir, "escalation.json");
-  await until(() => fs.existsSync(escPath), "scope pause");
-  const escalation = read(escPath, escalationSchema);
-  assert.equal(escalation?.kind, "scope_violation");
-  const actor = read(path.join(dir, "actor.lock", "process.json"), processSchema);
-  assert.ok(actor !== undefined);
-  assert.equal(signalProcess(actor, "SIGSTOP"), true);
-  let second: string;
-  try {
-    await until(
-      () =>
-        execFileSync("ps", ["-o", "stat=", "-p", String(actor.pid)], { encoding: "utf8" })
-          .trim()
-          .startsWith("T"),
-      "actor stopped at the open pause",
-    );
-    second = enqueue(base, launch, { action: "steer", prompt: correction });
-    const approval = prepareOverseerReviewAction(base, launch, {
-      action: "review",
-      verdict: "approved",
-      summary: "I checked the README change.",
+nodeTest(
+  "tool-error loop pauses after 3 consecutive error turns and resumes on steer",
+  { timeout: 30_000 },
+  async (t) => {
+    const repo = makeGitRepo(t);
+    const run = await launchChild(t, {
+      repo,
+      prompt: "TOOL_ERROR_LOOP",
+      judge: "off",
     });
-    assert.equal(approval.released, true);
-    const resolution = read(
-      path.join(dir, "escalation-resolution.json"),
-      escalationResolutionSchema,
-    );
-    assert.equal(resolution?.escalationId, escalation.id);
-    assert.equal(resolution.diffDigest, escalation.diffDigest);
-  } finally {
-    assert.equal(signalProcess(actor, "SIGCONT"), true);
-  }
 
-  const resultPath = path.join(dir, "result.json");
-  await until(() => {
-    const next = read(escPath, escalationSchema);
-    return fs.existsSync(resultPath) || (next !== undefined && next.id !== escalation.id);
-  }, "native completion or a second review");
-  assert.equal(read(path.join(admissions, `${second}.json`), admissionSchema)?.state, "accepted");
-  assert.equal(
-    read(resultPath, resultSchema)?.status,
-    "completed",
-    "approval prevents a repeat pause",
-  );
-  assert.equal(fs.readFileSync(path.join(work, "README.md"), "utf8"), "out-of-scope drift\n");
-  const branch = sdk.SessionManager.open(sessionFile).getBranch();
-  const delivered = branch.flatMap((entry) => {
-    if (entry.type === "custom_message") {
-      return [entry.content];
-    }
-    if (
-      entry.type === "message" &&
-      (entry.message.role === "user" || entry.message.role === "assistant")
-    ) {
-      const { content } = entry.message;
-      return typeof content === "string"
-        ? [content]
-        : content.flatMap((block) => (block.type === "text" ? [block.text] : []));
-    }
-    return [];
-  });
-  assert.deepEqual(delivered, [launch.prompt, earlier, correction, "REPORTED"]);
-});
+    const errEsc = await until(run.readEsc, "tool_errors pause");
+    assert.equal(errEsc.kind, "tool_errors");
+    assert.equal(errEsc.toolErrorTurns?.length, 3);
+
+    const steer = { id: randomUUID(), prompt: "Stop running failing bash commands and reply." };
+    assert.ok(resolveActiveEscalation(run.base, run.launch, "approved", steer) !== undefined);
+    enqueue(run.base, run.launch, { action: "steer", prompt: steer.prompt, id: steer.id });
+
+    const result = await until(run.readRes, "completion after error steer");
+    assert.equal(result.status, "completed");
+    assert.equal(run.readOut(), "RECOVERED_AFTER_ERROR_STEER");
+  },
+);

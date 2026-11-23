@@ -49,9 +49,6 @@ export function validateIntercomArguments(params: IntercomToolParams): ToolResul
   ) {
     return toolError("'entryId', 'offset', and 'limit' are only valid for action='last'");
   }
-  if (params.contract !== undefined && params.action !== "reply") {
-    return toolError("'contract' is only valid for action='reply'");
-  }
   return listingError(params) ?? claimError(params);
 }
 export function sendOptions(params: IntercomToolParams): {

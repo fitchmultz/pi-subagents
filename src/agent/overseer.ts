@@ -10,12 +10,10 @@ import { isRecord, recordAt, type UnknownRecord } from "../shared/unknown.ts";
 import {
   overseerLiveStateSchema,
   THINKING_LEVELS,
-  type DelegationContract,
   type Launch,
   type OverseerLaunch,
 } from "./contracts.ts";
 import { notifyInventory } from "./inventory-events.ts";
-import { normalizeDelegationContract } from "./overseer-scope.ts";
 import { read, write } from "./storage.ts";
 import type { DelegateInput } from "./tool-schemas.ts";
 
@@ -45,10 +43,6 @@ export function writeLiveOverseer(
   });
 }
 
-/**
- * Effective overseer config for a run: live owner state in `<base>/overseer.json` when present,
- * falling back to the launch-time snapshot for older parents or standalone tests.
- */
 export function activeOverseer(base: string, launch: Pick<Launch, "overseer">): ActiveOverseer {
   const live = read(path.join(base, OVERSEER_STATE_FILE), overseerLiveStateSchema);
   if (live !== undefined) {
@@ -62,8 +56,8 @@ export function activeOverseer(base: string, launch: Pick<Launch, "overseer">): 
 
 const PROMPT_SECTION = [
   "Overseer mode is active. Discuss architecture, verify existing language and package primitives before delegating, and keep direct edits to small scripts or surgical fixes.",
-  "When delegating via `delegate`, always supply `contract` (`scope: []` for recon/review, or allowed relative `scope` edit paths/globs plus `verification`, `requiredPrimitives`, `nonGoals`, and `baseBranch` for implementation; shell commands are not OS-sandboxed).",
-  "You are accountable for every child output: handle mid-run escalations promptly and inspect the real git diff against the contract before finishing.",
+  "Pass `readOnly: true` for research, audit, or review children; editing children work freely in plain English without rigid file-glob contracts (prefer isolated worktrees).",
+  'Children pause at natural checkpoints (early shape check, grounded skeptic findings with quoted hunks, tool-error loops, and pre-ship final diff). Answer pauses with `agent_runs` `action="continue"` (omit `prompt` to approve and resume, or include `prompt` to steer with corrections) or `action="stop"`.',
 ].join("\n");
 
 export interface OverseerState {
@@ -75,7 +69,6 @@ export interface OverseerState {
 export interface PreparedOverseerDelegation {
   readonly defaultModel?: string;
   readonly defaultThinking?: ThinkingLevel;
-  readonly contract?: DelegationContract;
   readonly overseer?: OverseerLaunch;
 }
 
@@ -106,6 +99,44 @@ export function splitModelSpec(model: string): {
     }
   }
   return { defaultModel: model };
+}
+
+function extractUserText(content: unknown): string {
+  if (typeof content === "string") {
+    return content.trim();
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .flatMap((block) =>
+      isRecord(block) && block.type === "text" && typeof block.text === "string"
+        ? [block.text]
+        : [],
+    )
+    .join("\n")
+    .trim();
+}
+
+/** Captures recent owner messages from the parent session branch so the skeptic sees owner intent. */
+export function captureOwnerContext(
+  sessionManager: Pick<ExtensionContext["sessionManager"], "getBranch">,
+): string | undefined {
+  const branch: readonly unknown[] = sessionManager.getBranch();
+  const messages: string[] = [];
+  for (const entry of branch) {
+    if (!isRecord(entry) || entry.type !== "message" || !isRecord(entry.message)) {
+      continue;
+    }
+    if (entry.message.role !== "user") {
+      continue;
+    }
+    const text = extractUserText(entry.message.content);
+    if (text.length > 0) {
+      messages.push(text);
+    }
+  }
+  return messages.length === 0 ? undefined : messages.join("\n---\n");
 }
 
 function hostSettings(
@@ -187,7 +218,6 @@ export class OverseerController {
     return this.state;
   }
 
-  /** Publishes current overseer state to `<base>/overseer.json` for running children. */
   publishLive(base: string): void {
     if (!this.shouldPublishOnSync(base)) {
       return;
@@ -304,7 +334,7 @@ export class OverseerController {
     }
     if (low !== "auto" && low !== "off" && !validSpec(s)) {
       ctx.ui.notify(
-        "Judge must be 'auto', 'off', provider/model, 'reset', or 'status'.",
+        "Judge must be 'auto', 'off', provider/model[:thinking], 'reset', or 'status'.",
         "warning",
       );
       return;
@@ -314,20 +344,12 @@ export class OverseerController {
     ctx.ui.notify(`Overseer judge set to ${judge}`, "info");
   }
 
-  prepareDelegation(input: DelegateInput): PreparedOverseerDelegation {
-    const contract =
-      input.contract === undefined ? undefined : normalizeDelegationContract(input.contract);
+  prepareDelegation(_input: DelegateInput): PreparedOverseerDelegation {
     if (!this.state.enabled) {
-      return contract === undefined ? {} : { contract };
-    }
-    if (contract === undefined) {
-      throw new Error(
-        "Overseer mode requires contract ({ scope, verification?, requiredPrimitives?, nonGoals?, baseBranch? }); use scope: [] when file edits are not needed.",
-      );
+      return {};
     }
     return {
       ...splitModelSpec(this.state.model),
-      contract,
       overseer: { enabled: true, judge: this.state.judge },
     };
   }
@@ -367,9 +389,17 @@ export class OverseerController {
     });
     this.pi.registerCommand("overseer-judge", {
       description:
-        "Set or inspect the overseer decision judge (/overseer-judge <auto|off|provider/model|reset|status>)",
+        "Set or inspect the overseer skeptic model (/overseer-judge <auto|off|provider/model[:thinking]|reset|status>)",
       getArgumentCompletions: (p) =>
-        completions(p, ["auto", "off", "status", "reset", "google/gemini-decision-1"]),
+        completions(p, [
+          "auto",
+          "off",
+          "status",
+          "reset",
+          "cloudflare-ai-gateway/claude-haiku-5-5",
+          "cloudflare-ai-gateway/gpt-6-luna:medium",
+          "google/gemini-3.8-flash:medium",
+        ]),
       handler: (args, ctx) => {
         this.onJudge(args, ctx);
         return Promise.resolve();

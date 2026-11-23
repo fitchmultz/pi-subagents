@@ -35,36 +35,36 @@ agent_runs({
   id: "<run-id>",
   prompt: "Now inspect the refresh-token path. Do not edit.",
 });
-agent_runs({
-  action: "review",
-  id: "<run-id>",
-  verdict: "approved",
-  summary: "Verified git diff in src/auth.ts and unit test output.",
-});
+agent_runs({ action: "continue", id: "<run-id>" });
 agent_runs({ action: "stop", id: "<run-id>" });
 ```
 
 ## Overseer mode (opt-in)
 
-Toggle `/overseer` (or pass `--overseer`) to add contract scoping, mid-run
-review, and completion diff review to `delegate` (`model` defaults to `inherit`,
-preserving normal `delegate` model/thinking inheritance unless configured via `/overseer-model`
-or `subagents.overseer` in settings). When off, `delegate` and `agent_runs` behave identically
-to default mode.
+Toggle `/overseer` (or pass `--overseer`) to add natural milestone check-ins and a grounded code
+skeptic to `delegate` (`model` defaults to `inherit`, preserving normal `delegate` model/thinking
+inheritance unless configured via `/overseer-model` or `subagents.overseer` in settings). When
+off, `delegate` and `agent_runs` behave identically to default mode.
 
 When enabled:
 
-- `delegate` requires `contract` (`scope`, `verification`, and optional `baseBranch`,
-  `requiredPrimitives`, `nonGoals`); omitted `model`/`thinking` inherit normally unless an overseer model is configured.
-- Child sessions block out-of-scope edit tool calls before writing. Git checks can identify
-  out-of-scope changes, and repeated tool errors have their own review notice.
-- At diff checkpoints, an available decision classifier can pause the child and ask the parent
-  to review possible drift. The `[agent-escalation]` says `review needed`: the classifier's choice
-  is not a finding. In `auto` mode, a classifier that gives no verdict is skipped for the next
-  available one. If none gives a verdict, the child continues unless another check pauses it.
-  A run that ends with unjudged changes says so in its completion notice.
-- Completed mutating overseen runs require `agent_runs({ action: "review", ... })` before
-  the parent session settles (`agent_before_settle`).
+- No file-glob contracts or contract amendments are required. Pass `readOnly: true` for research,
+  audit, or review children to disable file-editing tools; editing children work freely in plain
+  English (prefer isolated worktrees).
+- Editing children pause at natural checkpoints using a single delta watermark ("what changed
+  since the parent last looked"):
+  1. **Early shape check:** once per editing run on the first mutating turn that modifies the
+     working tree so the parent can course-correct while pivots are cheap.
+  2. **Grounded skeptic (mid-flight):** a fast reasoning model (`claude-haiku-5-5` →
+     `gpt-6-luna:medium` → `gemini-3.8-flash:medium` on `auto`, or any `provider/model[:thinking]`
+     via `/overseer-judge`) scans new diffs against the owner's intent, child task, and guidance.
+     Every finding is validated in code against the real diff (`file` + literal `excerpt`);
+     ungrounded findings are dropped automatically so content-free pauses cannot happen.
+     Blocking findings pause the child; non-blocking findings send a quiet FYI note while it runs.
+  3. **Pre-ship final diff check:** right before settling, if changes remain since the parent's
+     last checkpoint, the child pauses so the parent sees the final diff before completion.
+- Answer any pause with `agent_runs({ action: "continue", id })` (omit `prompt` to approve and
+  resume, or pass `prompt` to steer with corrections) or `agent_runs({ action: "stop", id })`.
 
 ## Talk to agents
 

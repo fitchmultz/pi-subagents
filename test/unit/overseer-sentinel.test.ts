@@ -1,2210 +1,841 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { test as nodeTest, type TestContext } from "node:test";
+import { describe as nodeDescribe, it as nodeIt, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { ClassifierApi, ClassifierContext, ClassifierModel } from "@earendil-works/pi-ai";
-import {
-  DefaultResourceLoader,
-  SessionManager,
-  SettingsManager,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import {
   escalationResolutionSchema,
   escalationSchema,
-  judgeCheckpointsSchema,
   type Escalation,
-  type JudgeCheckpoint,
   type Launch,
 } from "../../src/agent/contracts.ts";
-import { notifications, release } from "../../src/agent/notifications.ts";
+import { notifications } from "../../src/agent/notifications.ts";
 import {
-  acceptedPoint,
-  captureRepoSnapshot,
-  changesDiff,
-  changesDiffCommand,
-  changesStat,
-  launchPoint,
-  ownChanges,
-  type RepoSnapshot,
-  type ReviewPoint,
-} from "../../src/agent/overseer-git.ts";
+  captureSnapshot,
+  diffSnapshots,
+  UNREADABLE_DIFF_MARKER,
+} from "../../src/agent/overseer-diff.ts";
 import {
-  checkDeterministicTripwires,
-  evaluateDecisionCheckpoint,
+  checkpointEvidenceLines,
+  checkpointKindLabel,
+  inspectJudgeCheckpoints,
+  judgeUnavailable,
   readJudgeCheckpoints,
-  type JudgeModelRegistry,
-} from "../../src/agent/overseer-judge.ts";
+} from "../../src/agent/overseer-evidence.ts";
+import { readEscalation, resolveActiveEscalation } from "../../src/agent/overseer-pause.ts";
 import {
-  EscalationPause,
-  resolveActiveEscalation,
-  type SteerCommand,
-} from "../../src/agent/overseer-pause.ts";
+  evaluateLiveSkeptic,
+  validateGroundedFindings,
+  type SkepticModelRegistry,
+} from "../../src/agent/overseer-skeptic.ts";
+import { OverseerSentinel, readOverseerNotes } from "../../src/agent/overseer-sentinel.ts";
 import {
-  prepareContractAmendment,
-  recordContractAmendment,
-} from "../../src/agent/overseer-contract.ts";
-import { OverseerSentinel } from "../../src/agent/overseer-sentinel.ts";
-import { writeLiveOverseer } from "../../src/agent/overseer.ts";
-import { needsOverseerReview } from "../../src/agent/overseer-review.ts";
-import { read, runDirectory, write } from "../../src/agent/storage.ts";
-import { renderInspection } from "../../src/agent/view.ts";
-import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
+  captureOwnerContext,
+  OverseerController,
+  splitModelSpec,
+  writeLiveOverseer,
+} from "../../src/agent/overseer.ts";
+import { read, runDirectory } from "../../src/agent/storage.ts";
+import { createNativeSessionFixture } from "../support/native-session.ts";
 
 function initGitRepo(t: TestContext): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-git-"));
-  t.after(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-  git(dir, "init", "-b", "main");
-  git(dir, "config", "user.email", "test@example.com");
-  git(dir, "config", "user.name", "Test");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-v2-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
   fs.mkdirSync(path.join(dir, "src"), { recursive: true });
-  fs.mkdirSync(path.join(dir, "packages", "foo", "src"), { recursive: true });
-  fs.writeFileSync(path.join(dir, "src", "allowed.ts"), "export const x = 1;\n");
-  fs.writeFileSync(path.join(dir, "packages", "foo", "src", "item.ts"), "export const y = 1;\n");
-  fs.writeFileSync(path.join(dir, "README.md"), "committed\n");
-  git(dir, "add", ".");
-  git(dir, "commit", "-m", "initial");
+  fs.writeFileSync(path.join(dir, "src", "app.ts"), "export const a = 1;\n");
+  execFileSync("git", ["add", "."], { cwd: dir });
+  execFileSync("git", ["commit", "-q", "-m", "initial"], { cwd: dir });
   return dir;
 }
 
-/** The deterministic checks for a run whose only accepted state is its launch. */
-function tripwires(options: {
-  cwd: string;
-  contract: NonNullable<Launch["contract"]>;
-  baseline: ReviewPoint;
-  current: RepoSnapshot;
-}): ReturnType<typeof checkDeterministicTripwires> {
-  const { baseline, ...rest } = options;
-  return checkDeterministicTripwires({
-    ...rest,
-    launch: baseline.snapshot,
-    changes: ownChanges(options.cwd, baseline, options.current),
-  });
-}
-
-function makeClassifierModel(
-  provider: string,
-  id: string,
-  inputCost: number,
-): ClassifierModel<ClassifierApi> {
+function makeModel(provider: string, id: string, reasoning = true): Model<Api> {
   return {
-    type: "classifier",
     id,
     name: id,
-    api: "typesafe-system-one",
+    api: "openai-responses",
     provider,
-    baseUrl: "https://example.invalid/v1",
+    baseUrl: "http://127.0.0.1",
+    reasoning,
     input: ["text"],
-    contextWindow: 32768,
-    cost: { input: inputCost, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0 },
+    contextWindow: 200_000,
+    maxTokens: 16_384,
   };
 }
 
-function sampleLaunch(base: string, cwd: string, owner: string): Launch {
-  const launch: Launch = {
+function fakeAssistant(
+  text: string,
+  stopReason: AssistantMessage["stopReason"] = "stop",
+  errorMessage?: string,
+): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "openai-responses",
+    provider: "fixture",
+    model: "fixture",
+    usage: {
+      input: 100,
+      output: 20,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 120,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason,
+    ...(errorMessage === undefined ? {} : { errorMessage }),
+    timestamp: Date.now(),
+  };
+}
+
+function makeLaunch(base: string, cwd: string, overrides: Partial<Launch> = {}): Launch {
+  const id = overrides.id ?? "run-1";
+  const dir = runDirectory(base, id);
+  fs.mkdirSync(dir, { recursive: true });
+  return {
     version: 1,
-    id: "run-overseer-1",
-    rootId: "run-overseer-1",
-    owner,
+    id,
+    rootId: id,
+    owner: "owner-1",
     cwd,
-    agentDir: base,
-    sdk: cwd,
-    entry: path.join(cwd, "dist", "index.js"),
-    sessionFile: path.join(cwd, "child.jsonl"),
-    sessionId: "child-session",
-    prompt: "Use DatabaseSync.createTagStore()",
+    agentDir: path.join(base, "agent-dir"),
+    sdk: "/tmp/sdk",
+    entry: "/tmp/entry.js",
+    sessionFile: path.join(dir, "session.jsonl"),
+    sessionId: "sess-1",
+    prompt: "Fix recovery checkpoint fallback",
     context: "fresh",
     provider: "google",
-    model: "gemini-4-hydrogen",
-    thinking: "high",
+    model: "gemini-4-neon",
+    thinking: "low",
     trusted: true,
-    name: "tag-store",
-    contract: {
-      scope: ["src"],
-      verification: ["npm test"],
-      baseBranch: "main",
-      requiredPrimitives: ["DatabaseSync.createTagStore()"],
-    },
     overseer: { enabled: true, judge: "auto" },
     createdAt: Date.now(),
+    ...overrides,
   };
-  const dir = runDirectory(base, launch.id);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  write(path.join(dir, "launch.json"), launch, true);
-  return launch;
 }
 
-nodeTest(
-  "deterministic tripwires handle dirty baselines, reverts, unicode paths, subdirectory cwd, and branch rules",
-  async (t) => {
-    const repo = initGitRepo(t);
-    fs.writeFileSync(path.join(repo, "preexisting-notes.md"), "untouched\n");
-    fs.writeFileSync(path.join(repo, "README.md"), "preexisting dirty\n");
-    execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: repo, stdio: "ignore" });
+function makeStreamRegistry(
+  models: readonly Model<Api>[],
+  responder: (
+    model: Model<Api>,
+    userPrompt: string,
+    signal?: AbortSignal,
+  ) => Promise<AssistantMessage>,
+): SkepticModelRegistry {
+  return {
+    getAvailable: () => models,
+    find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
+    streamSimple: (model, context, options) => {
+      const user = context.messages[0];
+      const text = typeof user?.content === "string" ? user.content : "";
+      const promise = responder(model, text, options?.signal);
+      return { result: () => promise };
+    },
+  };
+}
 
-    const baseline = launchPoint(repo, { baseBranch: "main" });
-    const contract = {
-      scope: ["src"],
-      verification: ["npm test"],
-      baseBranch: "main",
-    };
+nodeDescribe("overseer-diff", () => {
+  nodeIt(
+    "tracks tracked and untracked changes across a single watermark without mutating git index",
+    (t) => {
+      const repo = initGitRepo(t);
+      const before = captureSnapshot(repo, []);
+      assert.equal(before.isGit, true);
+      assert.ok(before.tree !== undefined);
 
-    // Reverting pre-existing dirty out-of-scope file back to clean HEAD is not a scope violation,
-    // and non-ASCII filenames inside scope are parsed via -z without Git octal quoting.
-    fs.writeFileSync(path.join(repo, "README.md"), "committed\n");
-    fs.writeFileSync(path.join(repo, "src", "café.ts"), "export const accent = true;\n");
-    const cleanSnap = captureRepoSnapshot(repo, {
-      baseBranch: "main",
+      fs.writeFileSync(
+        path.join(repo, "src", "app.ts"),
+        "export const a = 2;\nexport const b = 3;\n",
+      );
+      fs.writeFileSync(path.join(repo, "src", "extra.ts"), "export const extra = true;\n");
+
+      const after = captureSnapshot(repo, []);
+      assert.ok(after.tree !== undefined);
+      const delta = diffSnapshots(repo, before, after, 10_000);
+      assert.deepEqual(delta.files, ["src/app.ts", "src/extra.ts"]);
+      assert.ok(delta.diff.includes("+export const b = 3;"));
+      assert.ok(delta.diff.includes("+export const extra = true;"));
+      assert.equal(delta.lineCount, 4);
+      assert.equal(delta.diffCommand, undefined);
+
+      const status = execFileSync("git", ["status", "--short"], { cwd: repo, encoding: "utf8" });
+      assert.match(status, /\?\? src\/extra\.ts/u);
+
+      const cut = diffSnapshots(repo, before, after, 10);
+      assert.equal(cut.diffCommand, `git diff ${before.tree} ${after.tree}`);
+
+      const same = diffSnapshots(repo, after, after, 10_000);
+      assert.deepEqual(same.files, []);
+      assert.equal(same.diff, "");
+    },
+  );
+});
+
+nodeDescribe("overseer-skeptic grounding and fallback", () => {
+  const sampleDiff = [
+    "diff --git a/src/recovery.ts b/src/recovery.ts",
+    "index 1111111..2222222 100644",
+    "--- a/src/recovery.ts",
+    "+++ b/src/recovery.ts",
+    "@@ -10,4 +10,5 @@ export function buildRecovery() {",
+    "-  const keep = true;",
+    "+  const priorWindow = notes.primaryNotePath === undefined ? history : undefined;",
+    "+  const limit = 5 * 60_000;",
+    " }",
+  ].join("\n");
+
+  nodeIt("keeps grounded blocking and non-blocking findings and drops fabricated quotes", () => {
+    const raw = JSON.stringify({
+      action: "flag",
+      findings: [
+        {
+          kind: "dropped_behavior",
+          file: "src/recovery.ts",
+          excerpt:
+            "+  const priorWindow = notes.primaryNotePath === undefined ? history : undefined;",
+          why: "Drops checkpoint even when notes section cannot fit.",
+          blocking: true,
+        },
+        {
+          kind: "invented_constraint",
+          file: "src/recovery.ts",
+          excerpt: "const limit = 5 * 60_000;",
+          why: "Arbitrary 5-minute interval instead of 60 seconds.",
+          blocking: false,
+        },
+        {
+          kind: "bug",
+          file: "src/recovery.ts",
+          excerpt: "this line does not exist anywhere in the diff",
+          why: "Hallucinated finding must be dropped.",
+          blocking: true,
+        },
+        {
+          kind: "bug",
+          file: "src/other.ts",
+          excerpt: "const limit = 5 * 60_000;",
+          why: "Wrong file must be dropped.",
+          blocking: true,
+        },
+      ],
     });
-    assert.deepEqual(ownChanges(repo, baseline, cleanSnap).files, ["src/café.ts"]);
+    const checked = validateGroundedFindings(raw, ["src/recovery.ts"], sampleDiff);
+    assert.ok(checked.ok);
+    assert.equal(checked.blocking.length, 1);
+    const [firstBlocking] = checked.blocking;
+    assert.ok(firstBlocking !== undefined);
+    assert.equal(firstBlocking.file, "src/recovery.ts");
     assert.equal(
-      tripwires({
-        cwd: repo,
-        contract,
-        baseline,
-        current: cleanSnap,
-      }),
-      undefined,
+      firstBlocking.excerpt,
+      "const priorWindow = notes.primaryNotePath === undefined ? history : undefined;",
     );
+    assert.equal(checked.notes.length, 1);
+    assert.equal(checked.notes[0]?.blocking, false);
+    assert.equal(checked.droppedUngrounded, 2);
+  });
 
-    // Subdirectory delegation cwd resolves Git's worktree-relative paths against show-toplevel.
-    const subCwd = path.join(repo, "packages", "foo");
-    const subBase = launchPoint(subCwd, { baseBranch: "main" });
-    fs.writeFileSync(path.join(subCwd, "src", "item.ts"), "export const y = 2;\n");
-    const subClean = captureRepoSnapshot(subCwd, {
-      baseBranch: "main",
-    });
-    assert.deepEqual(ownChanges(subCwd, subBase, subClean).files, ["src/item.ts"]);
-    // The line counts of a notice spell files the same way, also outside the cwd. One record
-    // is one line, so a name with a line break is written as a JSON string.
-    fs.writeFileSync(path.join(repo, "TOP.md"), "top\n");
-    fs.writeFileSync(path.join(repo, "two\nlines.md"), "odd\n");
-    const subChanges = ownChanges(
-      subCwd,
-      subBase,
-      captureRepoSnapshot(subCwd, { baseBranch: "main" }),
-    );
-    assert.deepEqual(subChanges.files, ["../../TOP.md", "../../two\nlines.md", "src/item.ts"]);
-    assert.equal(
-      changesStat(subCwd, subChanges),
-      '1\t0\t../../TOP.md\n1\t0\t"../../two\\nlines.md"\n1\t1\tsrc/item.ts',
-    );
-    fs.rmSync(path.join(repo, "TOP.md"));
-    fs.rmSync(path.join(repo, "two\nlines.md"));
-    assert.equal(
-      tripwires({
-        cwd: subCwd,
-        contract,
-        baseline: subBase,
-        current: subClean,
-      }),
-      undefined,
-    );
-
-    // Advancing main after feat/work was cut does not wedge in-scope edits on feat/work.
-    execFileSync("git", ["checkout", "main"], { cwd: repo, stdio: "ignore" });
-    fs.writeFileSync(path.join(repo, "UPSTREAM.md"), "ahead on main\n");
-    execFileSync("git", ["add", "UPSTREAM.md"], { cwd: repo, stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", "advance main"], { cwd: repo, stdio: "ignore" });
-    execFileSync("git", ["checkout", "feat/work"], { cwd: repo, stdio: "ignore" });
-    const divergedBase = launchPoint(repo, { baseBranch: "main" });
-    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "export const x = 22;\n");
-    const divergedCurrent = captureRepoSnapshot(repo, {
-      baseBranch: "main",
-    });
-    assert.equal(
-      tripwires({
-        cwd: repo,
-        contract,
-        baseline: divergedBase,
-        current: divergedCurrent,
-      }),
-      undefined,
-    );
-
-    // Unresolvable baseBranch fails closed instead of silently skipping ancestry checks.
-    const typoSnap = captureRepoSnapshot(repo, {
-      baseBranch: "mun",
-    });
-    assert.equal(
-      tripwires({
-        cwd: repo,
-        contract: { ...contract, baseBranch: "mun" },
-        baseline: divergedBase,
-        current: typoSnap,
-      })?.kind,
-      "branch_violation",
-    );
-
-    fs.writeFileSync(path.join(repo, "README.md"), "new drift\n");
-    const scopeSnap = captureRepoSnapshot(repo, {
-      baseBranch: "main",
-    });
-    const scopeHit = tripwires({
-      cwd: repo,
-      contract,
-      baseline,
-      current: scopeSnap,
-    });
-    assert.ok(scopeHit !== undefined);
-    assert.equal(scopeHit.kind, "scope_violation");
-    assert.match(scopeHit.summary, /README\.md/u);
-
-    fs.writeFileSync(path.join(repo, "README.md"), "committed\n");
-    // Sneaky commit on main followed by switching back to feat/work is caught via localBaseHead.
-    const sneakBase = launchPoint(repo, { baseBranch: "main" });
-    execFileSync("git", ["checkout", "main"], { cwd: repo, stdio: "ignore" });
-    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "export const x = 3;\n");
-    execFileSync("git", ["commit", "-m", "direct main commit", "src/allowed.ts"], {
-      cwd: repo,
-      stdio: "ignore",
-    });
-    execFileSync("git", ["checkout", "feat/work"], { cwd: repo, stdio: "ignore" });
-    const sneakAfter = captureRepoSnapshot(repo, {
-      baseBranch: "main",
-    });
-    const branchHit = tripwires({
-      cwd: repo,
-      contract,
-      baseline: sneakBase,
-      current: sneakAfter,
-    });
-    assert.equal(branchHit?.kind, "branch_violation");
-
-    // Committed git mv from out-of-scope README.md into src/ is caught via --no-renames.
-    const renameBase = launchPoint(repo, { baseBranch: "main" });
-    execFileSync("git", ["mv", "README.md", "src/moved-readme.md"], { cwd: repo, stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", "move readme", "README.md", "src/moved-readme.md"], {
-      cwd: repo,
-      stdio: "ignore",
-    });
-    const renameAfter = captureRepoSnapshot(repo, {
-      baseBranch: "main",
-    });
-    assert.equal(
-      tripwires({
-        cwd: repo,
-        contract,
-        baseline: renameBase,
-        current: renameAfter,
-      })?.kind,
-      "scope_violation",
-    );
-
-    // First commit in an unborn Git repository catches both out-of-scope files and main commits.
-    const unborn = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-unborn-"));
-    t.after(() => fs.rmSync(unborn, { recursive: true, force: true }));
-    execFileSync("git", ["init", "-b", "main"], { cwd: unborn, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@example.com"], {
-      cwd: unborn,
-      stdio: "ignore",
-    });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: unborn, stdio: "ignore" });
-    const unbornBase = launchPoint(unborn, { baseBranch: "main" });
-    fs.mkdirSync(path.join(unborn, "src"), { recursive: true });
-    fs.writeFileSync(path.join(unborn, "src", "init.ts"), "export const v = 1;\n");
-    execFileSync("git", ["add", "."], { cwd: unborn, stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", "first"], { cwd: unborn, stdio: "ignore" });
-    const unbornAfter = captureRepoSnapshot(unborn, {
-      baseBranch: "main",
-    });
-    assert.deepEqual(ownChanges(unborn, unbornBase, unbornAfter).files, ["src/init.ts"]);
-    assert.equal(
-      tripwires({
-        cwd: unborn,
-        contract,
-        baseline: unbornBase,
-        current: unbornAfter,
-      })?.kind,
-      "branch_violation",
-    );
-
-    // Unborn empty Git repository already checked out on a task branch allows in-scope edits/commits.
-    const unbornTask = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-unborn-task-"));
-    t.after(() => fs.rmSync(unbornTask, { recursive: true, force: true }));
-    execFileSync("git", ["init", "-b", "main"], { cwd: unbornTask, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@example.com"], {
-      cwd: unbornTask,
-      stdio: "ignore",
-    });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: unbornTask, stdio: "ignore" });
-    execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: unbornTask, stdio: "ignore" });
-    const unbornTaskBase = launchPoint(unbornTask, { baseBranch: "main" });
-    fs.mkdirSync(path.join(unbornTask, "src"), { recursive: true });
-    fs.writeFileSync(path.join(unbornTask, "src", "init.ts"), "export const v = 1;\n");
-    const unbornTaskDirty = captureRepoSnapshot(unbornTask, {
-      baseBranch: "main",
-    });
-    assert.equal(
-      tripwires({
-        cwd: unbornTask,
-        contract,
-        baseline: unbornTaskBase,
-        current: unbornTaskDirty,
-      }),
-      undefined,
-    );
-    execFileSync("git", ["add", "."], { cwd: unbornTask, stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", "task first"], { cwd: unbornTask, stdio: "ignore" });
-    const unbornTaskCommitted = captureRepoSnapshot(unbornTask, {
-      baseBranch: "main",
-    });
-    assert.equal(
-      tripwires({
-        cwd: unbornTask,
-        contract,
-        baseline: unbornTaskBase,
-        current: unbornTaskCommitted,
-      }),
-      undefined,
-    );
-
-    // Remote-only baseBranch (origin/main without refs/heads/main) reports sneaky base commit as
-    // branch_violation without diffing from the empty tree and inventing README.md scope drift.
-    const remoteOnly = initGitRepo(t);
-    execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: remoteOnly, stdio: "ignore" });
-    const mainTip = execFileSync("git", ["rev-parse", "main"], {
-      cwd: remoteOnly,
-      encoding: "utf8",
-    }).trim();
-    execFileSync("git", ["update-ref", "refs/remotes/origin/main", mainTip], {
-      cwd: remoteOnly,
-      stdio: "ignore",
-    });
-    execFileSync("git", ["branch", "-D", "main"], { cwd: remoteOnly, stdio: "ignore" });
-    const remoteBase = launchPoint(remoteOnly, { baseBranch: "main" });
-    execFileSync("git", ["checkout", "-b", "main", "origin/main"], {
-      cwd: remoteOnly,
-      stdio: "ignore",
-    });
-    fs.writeFileSync(path.join(remoteOnly, "src", "sneak.ts"), "export const s = 1;\n");
-    execFileSync("git", ["add", "src/sneak.ts"], { cwd: remoteOnly, stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", "sneak on main"], { cwd: remoteOnly, stdio: "ignore" });
-    execFileSync("git", ["checkout", "feat/work"], { cwd: remoteOnly, stdio: "ignore" });
-    const remoteAfter = captureRepoSnapshot(remoteOnly, {
-      baseBranch: "main",
-    });
-    assert.deepEqual(ownChanges(remoteOnly, remoteBase, remoteAfter).files, ["src/sneak.ts"]);
-    assert.equal(
-      tripwires({
-        cwd: remoteOnly,
-        contract,
-        baseline: remoteBase,
-        current: remoteAfter,
-      })?.kind,
-      "branch_violation",
-    );
-
-    // Fast-forwarding local main from upstream (git fetch origin main:main) while on feat/work
-    // is NOT misattributed as child scope/branch drift, even if upstream touched README.md.
-    const upstream = initGitRepo(t);
-    execFileSync("git", ["branch", "feat/work"], { cwd: upstream, stdio: "ignore" });
-    const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-ff-clone-"));
-    t.after(() => fs.rmSync(cloneDir, { recursive: true, force: true }));
-    execFileSync("git", ["clone", upstream, cloneDir], { stdio: "ignore" });
-    execFileSync("git", ["checkout", "feat/work"], { cwd: cloneDir, stdio: "ignore" });
-    execFileSync("git", ["branch", "-f", "main", "origin/main"], {
-      cwd: cloneDir,
-      stdio: "ignore",
-    });
-    const ffBase = launchPoint(cloneDir, { baseBranch: "main" });
-    execFileSync("git", ["checkout", "main"], { cwd: upstream, stdio: "ignore" });
-    fs.writeFileSync(path.join(upstream, "README.md"), "upstream readme update\n");
-    execFileSync("git", ["add", "README.md"], { cwd: upstream, stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", "upstream main"], { cwd: upstream, stdio: "ignore" });
-    execFileSync("git", ["fetch", "origin", "main:main"], { cwd: cloneDir, stdio: "ignore" });
-    const ffAfter = captureRepoSnapshot(cloneDir, {
-      baseBranch: "main",
-    });
-    assert.deepEqual(ownChanges(cloneDir, ffBase, ffAfter).files, []);
-    assert.equal(
-      tripwires({
-        cwd: cloneDir,
-        contract,
-        baseline: ffBase,
-        current: ffAfter,
-      }),
-      undefined,
-    );
-
-    // git pull --ff-only and ref-form baseBranch ("origin/main") fast-forwards pass, while
-    // reflogless direct commit + push on main fails closed even after a subsequent git fetch.
-    fs.writeFileSync(path.join(upstream, "README.md"), "upstream pull update\n");
-    execFileSync("git", ["commit", "-am", "upstream pull"], { cwd: upstream, stdio: "ignore" });
-    execFileSync("git", ["checkout", "main"], { cwd: cloneDir, stdio: "ignore" });
-    execFileSync("git", ["pull", "--ff-only", "origin", "main"], {
-      cwd: cloneDir,
-      stdio: "ignore",
-    });
-    execFileSync("git", ["checkout", "feat/work"], { cwd: cloneDir, stdio: "ignore" });
-    const refFormBase = launchPoint(cloneDir, { baseBranch: "origin/main" });
-    fs.writeFileSync(path.join(upstream, "README.md"), "upstream ref-form update\n");
-    execFileSync("git", ["commit", "-am", "upstream ref-form"], { cwd: upstream, stdio: "ignore" });
-    execFileSync("git", ["fetch", "origin", "main:main"], { cwd: cloneDir, stdio: "ignore" });
-    const pullAfter = captureRepoSnapshot(cloneDir, {
-      baseBranch: "origin/main",
-    });
-    assert.deepEqual(ownChanges(cloneDir, refFormBase, pullAfter).files, []);
-    assert.equal(
-      tripwires({
-        cwd: cloneDir,
-        contract: { ...contract, baseBranch: "origin/main" },
-        baseline: refFormBase,
-        current: pullAfter,
-      }),
-      undefined,
-    );
-
-    // Child committing directly on main and pushing to origin/main (even with a colliding `main`
-    // tag present) is still caught as branch_violation, not treated as an upstream fast-forward.
-    const bareOrigin = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-bare-origin-"));
-    const pushClone = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-push-clone-"));
-    t.after(() => {
-      fs.rmSync(bareOrigin, { recursive: true, force: true });
-      fs.rmSync(pushClone, { recursive: true, force: true });
-    });
-    execFileSync("git", ["init", "--bare", "-b", "main", bareOrigin], { stdio: "ignore" });
-    execFileSync("git", ["clone", bareOrigin, pushClone], { stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@example.com"], {
-      cwd: pushClone,
-      stdio: "ignore",
-    });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: pushClone, stdio: "ignore" });
-    fs.mkdirSync(path.join(pushClone, "src"), { recursive: true });
-    fs.writeFileSync(path.join(pushClone, "src", "init.ts"), "export const a = 1;\n");
-    execFileSync("git", ["add", "."], { cwd: pushClone, stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", "init"], { cwd: pushClone, stdio: "ignore" });
-    execFileSync("git", ["push", "-u", "origin", "main"], { cwd: pushClone, stdio: "ignore" });
-    execFileSync("git", ["tag", "main"], { cwd: pushClone, stdio: "ignore" });
-    execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: pushClone, stdio: "ignore" });
-    const pushBase = launchPoint(pushClone, { baseBranch: "main" });
-    execFileSync("git", ["checkout", "refs/heads/main"], { cwd: pushClone, stdio: "ignore" });
-    execFileSync("git", ["checkout", "-B", "main"], { cwd: pushClone, stdio: "ignore" });
-    fs.writeFileSync(path.join(pushClone, "src", "init.ts"), "export const a = 2;\n");
-    execFileSync("git", ["commit", "-am", "sneak push"], { cwd: pushClone, stdio: "ignore" });
-    execFileSync("git", ["push", "origin", "refs/heads/main:refs/heads/main"], {
-      cwd: pushClone,
-      stdio: "ignore",
-    });
-    execFileSync("git", ["checkout", "feat/work"], { cwd: pushClone, stdio: "ignore" });
-    const pushAfter = captureRepoSnapshot(pushClone, {
-      baseBranch: "main",
-    });
-    assert.deepEqual(ownChanges(pushClone, pushBase, pushAfter).files, ["src/init.ts"]);
-    assert.equal(
-      tripwires({
-        cwd: pushClone,
-        contract,
-        baseline: pushBase,
-        current: pushAfter,
-      })?.kind,
-      "branch_violation",
-    );
-    // Even under scope: ['*'], losing Git status mid-run fails closed instead of silently passing.
-    assert.equal(
-      tripwires({
-        cwd: pushClone,
-        contract: { scope: ["*"], verification: ["npm test"] },
-        baseline: pushBase,
-        current: captureRepoSnapshot(path.join(os.tmpdir(), "non-existent-git-dir")),
-      })?.kind,
-      "loop_violation",
-    );
-    execFileSync("git", ["config", "core.logAllRefUpdates", "false"], {
-      cwd: pushClone,
-      stdio: "ignore",
-    });
-    fs.rmSync(path.join(pushClone, ".git", "logs"), { recursive: true, force: true });
-    const refloglessPushBase = launchPoint(pushClone, { baseBranch: "main" });
-    execFileSync("git", ["checkout", "-B", "main", "origin/main"], {
-      cwd: pushClone,
-      stdio: "ignore",
-    });
-    fs.writeFileSync(path.join(pushClone, "src", "init.ts"), "export const a = 3;\n");
-    execFileSync("git", ["commit", "-am", "reflogless push"], { cwd: pushClone, stdio: "ignore" });
-    execFileSync("git", ["push", "origin", "refs/heads/main:refs/heads/main"], {
-      cwd: pushClone,
-      stdio: "ignore",
-    });
-    execFileSync("git", ["checkout", "feat/work"], { cwd: pushClone, stdio: "ignore" });
-    execFileSync("git", ["fetch", "-q", "origin"], { cwd: pushClone, stdio: "ignore" });
-    const refloglessPushAfter = captureRepoSnapshot(pushClone, {
-      baseBranch: "main",
-    });
-    assert.equal(
-      tripwires({
-        cwd: pushClone,
-        contract,
-        baseline: refloglessPushBase,
-        current: refloglessPushAfter,
-      })?.kind,
-      "branch_violation",
-    );
-
-    // An uncommitted edit that was there at launch is not the run's work. A forced checkout of
-    // another branch that drops it lists nothing, also after a checkpoint accepted that state.
-    const dirty = initGitRepo(t);
-    git(dirty, "branch", "feat/old");
-    fs.writeFileSync(path.join(dirty, "src", "second.ts"), "export const second = 2;\n");
-    git(dirty, "add", ".");
-    git(dirty, "commit", "-m", "second");
-    fs.writeFileSync(path.join(dirty, "README.md"), "preexisting dirty\n");
-    const dirtyLaunch = launchPoint(dirty);
-    const dirtyPassed = acceptedPoint(dirtyLaunch, captureRepoSnapshot(dirty));
-    git(dirty, "checkout", "-f", "feat/old");
-    assert.deepEqual(ownChanges(dirty, dirtyLaunch, captureRepoSnapshot(dirty)).files, []);
-    assert.deepEqual(ownChanges(dirty, dirtyPassed, captureRepoSnapshot(dirty)).files, []);
-
-    // Git compares file times in whole seconds. An edit of the same size, made in the second
-    // in which the index was written, is found only by content, and a snapshot taken a second
-    // later still has to find it.
-    const quick = path.join(dirty, "src", "allowed.ts");
-    const second = (file: string): number => Math.floor(fs.statSync(file).mtimeMs / 1000);
-    do {
-      fs.writeFileSync(quick, "export const x = 3;\n");
-      git(dirty, "add", ".");
-      fs.writeFileSync(quick, "export const x = 4;\n");
-    } while (second(quick) !== second(path.join(dirty, ".git", "index")));
-    while (Math.floor(Date.now() / 1000) <= second(quick)) {
-      await delay(50);
-    }
-    const quickEdit = ownChanges(dirty, dirtyLaunch, captureRepoSnapshot(dirty));
-    assert.match(changesDiff(quickEdit), /^\+export const x = 4;$/mu);
-  },
-);
-
-nodeTest(
-  "evaluateDecisionCheckpoint uses typed classifier catalog and asks the next classifier when a request fails",
-  async (t) => {
-    const repo = initGitRepo(t);
-    const baseline = launchPoint(repo);
-    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "const customCache = new Map();\n");
-    const diff = changesDiff(ownChanges(repo, baseline, captureRepoSnapshot(repo)));
-
-    const geminiDecision = makeClassifierModel("google", "gemini-decision-1", 0.03);
-    const freeOpenRouter = makeClassifierModel("openrouter", "parallel/decisions-fast:free", 0);
-    const luna = makeClassifierModel("openai", "gpt-6-luna", 0.25);
-    const gatewayLuna = makeClassifierModel("cloudflare-ai-gateway", "gpt-6-luna", 0.25);
-    const clef = makeClassifierModel("cloudflare-workers-ai", "@cf/cloudflare/clef", 0.24);
-    // In registry order `clef` comes before both Luna routes, and OpenAI's before the gateway's.
-    const catalog = [freeOpenRouter, clef, luna, gatewayLuna, geminiDecision];
-    const chosenModels: string[] = [];
-    const asked: ClassifierContext[] = [];
-    /** The classifiers whose requests fail, as with a provider account that is out of credits. */
-    const down = new Set<string>();
-    /** The classifiers whose responses carry no verdict. */
-    const silent = new Set<string>();
-    let available = catalog;
-    const fakeRegistry: JudgeModelRegistry = {
-      getAvailableOfType: () => Promise.resolve(available),
-      getModelOfType: (_type, provider, id) =>
-        catalog.find((m) => m.provider === provider && m.id === id),
-      classify: (model, context, options) => {
-        const name = `${model.provider}/${model.id}`;
-        chosenModels.push(name);
-        asked.push(context);
-        const result = {
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          timestamp: Date.now(),
-          answers: {},
-        };
-        // As the registry reports a request that its caller's signal cancelled.
-        if (options?.signal?.aborted === true) {
-          return Promise.resolve({ ...result, stopReason: "aborted", errorMessage: "aborted" });
-        }
-        if (down.has(name)) {
-          return Promise.resolve({
-            ...result,
-            stopReason: "error",
-            errorMessage: "credits depleted",
-          });
-        }
-        if (silent.has(name)) {
-          return Promise.resolve({ ...result, stopReason: "stop" });
-        }
-        return Promise.resolve({
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          stopReason: "stop",
-          timestamp: Date.now(),
-          answers: {
-            verdict: {
-              type: "choice",
-              choice: "primitive_violation",
-              probabilities: {
-                compliant: 0.05,
-                scope_violation: 0.04,
-                primitive_violation: 0.91,
-              },
-              confidence: 0.48,
+  nodeIt(
+    "turns an all-ungrounded flag response into an ok verdict (zero content-free pauses)",
+    () => {
+      const raw =
+        "```json\n" +
+        JSON.stringify({
+          action: "flag",
+          findings: [
+            {
+              kind: "bug",
+              file: "src/recovery.ts",
+              excerpt: "fabricated line",
+              why: "No real hunk.",
+              blocking: true,
             },
-          },
-        });
-      },
-    };
+          ],
+        }) +
+        "\n```";
+      const checked = validateGroundedFindings(raw, ["src/recovery.ts"], sampleDiff);
+      assert.ok(checked.ok);
+      assert.equal(checked.blocking.length, 0);
+      assert.equal(checked.notes.length, 0);
+      assert.equal(checked.droppedUngrounded, 1);
+    },
+  );
 
-    const hit = await evaluateDecisionCheckpoint({
-      modelRegistry: fakeRegistry,
+  nodeIt("falls back across auto skeptic candidates and records checkpoints on disk", async (t) => {
+    const repo = initGitRepo(t);
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-base-"));
+    t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+    const launch = makeLaunch(base, repo);
+
+    const haiku = makeModel("cloudflare-ai-gateway", "claude-haiku-5-5", false);
+    const luna = makeModel("cloudflare-ai-gateway", "gpt-6-luna", true);
+    const asked: string[] = [];
+    const registry = makeStreamRegistry([haiku, luna], async (model) => {
+      asked.push(`${model.provider}/${model.id}`);
+      if (model.id === "claude-haiku-5-5") {
+        return fakeAssistant("", "error", "rate limited");
+      }
+      return fakeAssistant(
+        JSON.stringify({
+          action: "flag",
+          findings: [
+            {
+              kind: "dropped_behavior",
+              file: "src/recovery.ts",
+              excerpt:
+                "const priorWindow = notes.primaryNotePath === undefined ? history : undefined;",
+              why: "Drops checkpoint before checking whether notes fit.",
+              blocking: true,
+            },
+          ],
+        }),
+      );
+    });
+
+    const failed = new Set<string>();
+    const outcome = await evaluateLiveSkeptic(base, launch, {
+      modelRegistry: registry,
       judgeSpec: "auto",
-      prompt: "Implement tag queries",
-      continuation: true,
-      guidance: ["Reuse the package's current query helper; do not introduce a new API."],
-      contract: {
-        scope: ["src"],
-        verification: ["npm test"],
-        requiredPrimitives: ["DatabaseSync.createTagStore()"],
-      },
-      changedFiles: ["src/allowed.ts"],
-      acceptedFiles: ["README.md"],
-      diff,
-      failed: new Set(),
+      ownerContext: "Never drop both checkpoint and notes.",
+      taskPrompt: launch.prompt,
+      guidance: [],
+      changedFiles: ["src/recovery.ts"],
+      diff: sampleDiff,
+      failed,
       signal: undefined,
     });
+    assert.equal(outcome.kind, "verdict");
+    assert.deepEqual(asked, [
+      "cloudflare-ai-gateway/claude-haiku-5-5",
+      "cloudflare-ai-gateway/gpt-6-luna",
+    ]);
+    assert.equal(outcome.verdict.model, "cloudflare-ai-gateway/gpt-6-luna:medium");
+    assert.equal(outcome.verdict.blocking.length, 1);
+    assert.equal(outcome.checkpoint.outcome, "flagged");
+    assert.equal(outcome.checkpoint.failed?.length, 1);
+    assert.ok(failed.has("cloudflare-ai-gateway/claude-haiku-5-5"));
+  });
 
-    assert.deepEqual(chosenModels, ["google/gemini-decision-1"]);
-    // The judge is told what is new and what was accepted before, and to judge only the new part.
-    assert.deepEqual(asked[0]?.state, {
-      contract: {
-        scope: ["src"],
-        verification: ["npm test"],
-        requiredPrimitives: ["DatabaseSync.createTagStore()"],
-      },
-      changedFiles: ["src/allowed.ts"],
-      acceptedFiles: ["README.md"],
-      diff,
-      taskPrompt: "Implement tag queries",
-      continuation: true,
-      taskGuidance: ["Reuse the package's current query helper; do not introduce a new API."],
-    });
-    assert.match(
-      asked[0].questions["verdict"]?.instructions ?? "",
-      /Assess only `diff`.*`acceptedFiles` is history, not evidence of a new change\./u,
-    );
-    assert.ok(hit !== undefined);
-    assert.equal(hit.kind, "primitive_violation");
-    assert.equal(
-      hit.summary,
-      "Review needed: google/gemini-decision-1 asked for a check but did not identify a specific hunk or rule.",
-    );
+  nodeIt(
+    "aborts an in-flight skeptic request when overseer judge is toggled off live",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-abort-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      const launch = makeLaunch(base, repo);
+      writeLiveOverseer(base, { enabled: true, judge: "auto" });
 
-    const checkpoint = (judgeSpec: string, failed: Set<string>, signal?: AbortSignal) =>
-      evaluateDecisionCheckpoint({
-        modelRegistry: fakeRegistry,
-        judgeSpec,
-        prompt: "Implement tag queries",
-        continuation: false,
-        guidance: [],
-        contract: {
-          scope: ["src"],
-          verification: ["npm test"],
-          requiredPrimitives: ["DatabaseSync.createTagStore()"],
-        },
-        changedFiles: ["src/allowed.ts"],
-        acceptedFiles: [],
-        diff,
-        failed,
-        signal,
+      const haiku = makeModel("cloudflare-ai-gateway", "claude-haiku-5-5", false);
+      let aborted = false;
+      const registry = makeStreamRegistry([haiku], (_model, _prompt, signal) => {
+        return new Promise<AssistantMessage>((resolve) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve(fakeAssistant("", "aborted"));
+          });
+          setTimeout(() => {
+            writeLiveOverseer(base, { enabled: true, judge: "off" });
+          }, 30);
+        });
       });
-    const google = "google/gemini-decision-1";
-    const gateway = "cloudflare-ai-gateway/gpt-6-luna";
-    const openai = "openai/gpt-6-luna";
-    const workersAi = "cloudflare-workers-ai/@cf/cloudflare/clef";
-    const other = "openrouter/parallel/decisions-fast:free";
 
-    // On `auto`, a failed request is no verdict: the next preferred classifier gives it. With
-    // Google failing, GPT-6 Luna through Cloudflare AI Gateway is asked before Cloudflare's
-    // `clef`. At the next checkpoint of the same run the classifier that failed is not asked
-    // first again.
-    down.add(google);
-    const run = new Set<string>();
-    chosenModels.length = 0;
-    const verdict = await checkpoint("auto", run);
-    assert.deepEqual(chosenModels, [google, gateway]);
-    assert.match(verdict?.summary ?? "", /^Review needed: cloudflare-ai-gateway\/gpt-6-luna /u);
-    await checkpoint("auto", run);
-    assert.deepEqual(chosenModels, [google, gateway, gateway]);
-
-    // A configured judge is not replaced by a classifier that would answer.
-    chosenModels.length = 0;
-    await assert.rejects(checkpoint(google, new Set()), {
-      message: "Overseer judge 'google/gemini-decision-1' failed: credits depleted.",
-    });
-    assert.deepEqual(chosenModels, [google]);
-
-    // When the preferred classifiers fail, `auto` asks each of them in its preferred order, and
-    // then the other available classifiers.
-    down.add(gateway).add(openai).add(workersAi);
-    chosenModels.length = 0;
-    const fromOther = await checkpoint("auto", new Set());
-    assert.deepEqual(chosenModels, [google, gateway, openai, workersAi, other]);
-    assert.match(
-      fromOther?.summary ?? "",
-      /^Review needed: openrouter\/parallel\/decisions-fast:free /u,
-    );
-
-    // When every request fails, the checkpoint reports each failure instead of a verdict.
-    down.add(other);
-    chosenModels.length = 0;
-    await assert.rejects(checkpoint("auto", new Set()), {
-      message:
-        "Overseer judge 'google/gemini-decision-1' failed: credits depleted. Overseer judge 'cloudflare-ai-gateway/gpt-6-luna' failed: credits depleted. Overseer judge 'openai/gpt-6-luna' failed: credits depleted. Overseer judge 'cloudflare-workers-ai/@cf/cloudflare/clef' failed: credits depleted. Overseer judge 'openrouter/parallel/decisions-fast:free' failed: credits depleted.",
-    });
-    assert.deepEqual(chosenModels, [google, gateway, openai, workersAi, other]);
-
-    // A response without a verdict does not say that the work complies: the next classifier is
-    // asked, and the silent one counts as failed.
-    down.clear();
-    silent.add(google);
-    const afterSilence = new Set<string>();
-    chosenModels.length = 0;
-    const spoken = await checkpoint("auto", afterSilence);
-    assert.deepEqual(chosenModels, [google, gateway]);
-    assert.equal(spoken?.kind, "primitive_violation");
-    assert.deepEqual([...afterSilence], [google]);
-    await assert.rejects(checkpoint(google, new Set()), {
-      message: "Overseer judge 'google/gemini-decision-1' failed: the response has no verdict.",
-    });
-    silent.clear();
-
-    // A cancelled request is neither a verdict nor a failed classifier: no other one is asked.
-    const cancelled = new AbortController();
-    cancelled.abort();
-    const afterCancel = new Set<string>();
-    chosenModels.length = 0;
-    await assert.rejects(checkpoint("auto", afterCancel, cancelled.signal), {
-      message: "The request to overseer judge 'google/gemini-decision-1' was cancelled.",
-    });
-    assert.deepEqual(chosenModels, [google]);
-    assert.deepEqual([...afterCancel], []);
-
-    // With no classifier available, `auto` has no verdict to give and says so. A judge that is
-    // `off` asks nothing and reports nothing.
-    available = [];
-    chosenModels.length = 0;
-    await assert.rejects(checkpoint("auto", new Set()), {
-      message: "No classifier model is available for the overseer judge.",
-    });
-    assert.equal(await checkpoint("off", new Set()), undefined);
-    assert.deepEqual(chosenModels, []);
-  },
-);
-
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim();
-}
-
-/** An upstream repository, a clone of it on `main`, and two linked worktrees of that clone. */
-function initWorktrees(t: TestContext): {
-  upstream: string;
-  checkout: string;
-  child: string;
-  sibling: string;
-} {
-  const upstream = initGitRepo(t);
-  fs.writeFileSync(
-    path.join(upstream, "src", "shared.ts"),
-    "export const first = 1;\n\n\n\n\nexport const last = 1;\n",
-  );
-  git(upstream, "add", ".");
-  git(upstream, "commit", "-m", "shared");
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "overseer-worktrees-")));
-  t.after(() => {
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-  const checkout = path.join(root, "checkout");
-  git(root, "clone", upstream, checkout);
-  git(checkout, "config", "user.email", "test@example.com");
-  git(checkout, "config", "user.name", "Test");
-  const child = path.join(root, "child");
-  const sibling = path.join(root, "sibling");
-  git(checkout, "worktree", "add", "-b", "feat/child", child);
-  git(checkout, "worktree", "add", "-b", "feat/sibling", sibling);
-  return { upstream, checkout, child, sibling };
-}
-
-nodeTest("a shared checkout fast-forward is not read-only child work without a baseBranch", (t) => {
-  const { upstream, checkout } = initWorktrees(t);
-  const contract = { scope: [], verification: ["git status --short"] };
-  const launch = launchPoint(checkout);
-  let reviewed = launch;
-  for (const content of ["first upstream update\n", "second upstream update\n"]) {
-    fs.writeFileSync(path.join(upstream, "README.md"), content);
-    git(upstream, "commit", "-am", "upstream update");
-    git(checkout, "pull", "--ff-only");
-    const current = captureRepoSnapshot(checkout);
-    assert.equal(tripwires({ cwd: checkout, contract, baseline: reviewed, current }), undefined);
-    reviewed = acceptedPoint(reviewed, current);
-  }
-  assert.deepEqual(ownChanges(checkout, launch, captureRepoSnapshot(checkout)).files, []);
-
-  fs.appendFileSync(path.join(checkout, "README.md"), "local edit\n");
-  const edited = captureRepoSnapshot(checkout);
-  assert.equal(
-    tripwires({
-      cwd: checkout,
-      contract,
-      baseline: reviewed,
-      current: edited,
-    })?.kind,
-    "scope_violation",
-  );
-  git(checkout, "commit", "-am", "local edit");
-  assert.deepEqual(ownChanges(checkout, launch, captureRepoSnapshot(checkout)).files, [
-    "README.md",
-  ]);
-});
-
-nodeTest("a remote-tracking update without a reflog stays visible for review", (t) => {
-  const upstream = initGitRepo(t);
-  const checkout = `${upstream}-checkout`;
-  t.after(() => fs.rmSync(checkout, { recursive: true, force: true }));
-  git(upstream, "clone", "--config=core.logAllRefUpdates=false", upstream, checkout);
-  const baseline = launchPoint(checkout);
-
-  fs.writeFileSync(path.join(upstream, "README.md"), "upstream refresh\n");
-  git(upstream, "commit", "-am", "upstream refresh");
-  git(checkout, "pull", "--ff-only");
-  assert.equal(git(checkout, "status", "--porcelain"), "");
-  assert.throws(() => git(checkout, "reflog", "exists", "refs/remotes/origin/main"), {
-    status: 1,
-  });
-
-  const current = captureRepoSnapshot(checkout);
-  assert.deepEqual(ownChanges(checkout, baseline, current).files, ["README.md"]);
-  assert.equal(
-    tripwires({
-      cwd: checkout,
-      contract: { scope: [] },
-      baseline,
-      current,
-    })?.kind,
-    "scope_violation",
-  );
-});
-
-nodeTest(
-  "a run's changes are its own work: sibling worktrees, upstream and existing commits stay out",
-  (t) => {
-    const { upstream, checkout, child, sibling } = initWorktrees(t);
-    const contract = { scope: ["src"], verification: ["npm test"], baseBranch: "main" };
-    const snapshot = (): RepoSnapshot => captureRepoSnapshot(child, { baseBranch: "main" });
-    const launch = launchPoint(child, { baseBranch: "main" });
-
-    // A sibling commits and edits in its own worktree; the main checkout commits on the base branch.
-    fs.writeFileSync(path.join(sibling, "README.md"), "sibling\n");
-    git(sibling, "commit", "-am", "sibling work");
-    fs.writeFileSync(path.join(sibling, "src", "allowed.ts"), "export const sibling = 1;\n");
-    fs.writeFileSync(path.join(checkout, "NOTES.md"), "main checkout\n");
-    git(checkout, "add", "NOTES.md");
-    git(checkout, "commit", "-m", "local main work");
-    const afterSibling = snapshot();
-    assert.deepEqual(ownChanges(child, launch, afterSibling).files, []);
-    assert.equal(
-      tripwires({
-        cwd: child,
-        contract,
-        baseline: launch,
-        current: afterSibling,
-      }),
-      undefined,
-    );
-
-    // Fast-forwarding the clean worktree to upstream lists nothing.
-    fs.writeFileSync(path.join(upstream, "README.md"), "upstream one\n");
-    fs.writeFileSync(path.join(upstream, "UPSTREAM.md"), "one\n");
-    git(upstream, "add", ".");
-    git(upstream, "commit", "-m", "upstream one");
-    git(child, "fetch", "origin");
-    git(child, "merge", "--ff-only", "origin/main");
-    const afterFastForward = snapshot();
-    assert.deepEqual(ownChanges(child, launch, afterFastForward).files, []);
-    assert.equal(
-      tripwires({
-        cwd: child,
-        contract,
-        baseline: launch,
-        current: afterFastForward,
-      }),
-      undefined,
-    );
-
-    // Merging newer upstream into the child's commits lists the child's files, and a file both
-    // sides changed, but nothing that only upstream changed.
-    fs.writeFileSync(path.join(child, "src", "allowed.ts"), "export const x = 2;\n");
-    fs.writeFileSync(
-      path.join(child, "src", "shared.ts"),
-      "export const first = 2;\n\n\n\n\nexport const last = 1;\n",
-    );
-    fs.writeFileSync(path.join(child, "src", "[id].ts"), "export const page = 1;\n");
-    git(child, "add", ".");
-    git(child, "commit", "-m", "child work");
-    fs.mkdirSync(path.join(upstream, "docs"));
-    fs.writeFileSync(path.join(upstream, "src", "i.ts"), "export const upstream = 1;\n");
-    fs.writeFileSync(path.join(upstream, "docs", "UP.md"), "two\n");
-    fs.writeFileSync(path.join(upstream, "README.md"), "upstream two\n");
-    fs.writeFileSync(
-      path.join(upstream, "src", "shared.ts"),
-      "export const first = 1;\n\n\n\n\nexport const last = 2;\n",
-    );
-    git(upstream, "add", ".");
-    git(upstream, "commit", "-m", "upstream two");
-    git(child, "fetch", "origin");
-    git(child, "merge", "--no-edit", "origin/main");
-    const merged = ownChanges(child, launch, snapshot());
-    assert.deepEqual(merged.files, ["src/[id].ts", "src/allowed.ts", "src/shared.ts"]);
-    assert.doesNotMatch(changesDiff(merged), /README\.md|UPSTREAM\.md|docs\/UP\.md|src\/i\.ts/u);
-    // The command a notice prints for the whole diff names the same files literally: `[id]` is
-    // not read as a pattern that also matches the upstream file `i.ts`.
-    const wholeDiff = execSync(changesDiffCommand(merged) ?? "false", { encoding: "utf8" });
-    assert.deepEqual(wholeDiff.match(/^\+\+\+ b\/.*$/gmu), [
-      "+++ b/src/[id].ts",
-      "+++ b/src/allowed.ts",
-      "+++ b/src/shared.ts",
-    ]);
-
-    // A second branch stacked on the first. Switching back down with a clean worktree lists
-    // nothing, whether the branches were accepted during this run or existed at its launch,
-    // and an edit made after the switch shows as that edit alone.
-    git(child, "checkout", "-b", "feat/child-2");
-    fs.writeFileSync(path.join(child, "src", "two.ts"), "export const two = 2;\n");
-    fs.appendFileSync(path.join(child, "src", "allowed.ts"), "export const upper = true;\n");
-    git(child, "add", ".");
-    git(child, "commit", "-m", "upper work");
-    const accepted = acceptedPoint(launch, snapshot());
-    for (const reviewed of [accepted, launchPoint(child, { baseBranch: "main" })]) {
-      git(child, "checkout", "feat/child");
-      assert.deepEqual(ownChanges(child, reviewed, snapshot()).files, []);
-      fs.appendFileSync(path.join(child, "src", "allowed.ts"), "export const lower = true;\n");
-      const edited = ownChanges(child, reviewed, snapshot());
-      assert.deepEqual(edited.files, ["src/allowed.ts"]);
-      assert.match(changesDiff(edited), /^\+export const lower = true;$/mu);
-      assert.doesNotMatch(changesDiff(edited), /upper|two\.ts/u);
-      git(child, "checkout", "--", "src/allowed.ts");
-      git(child, "checkout", "feat/child-2");
-    }
-
-    // The overseer approves uncommitted work: a new test and an edit.
-    fs.mkdirSync(path.join(child, "test"));
-    fs.writeFileSync(path.join(child, "test", "foo.test.ts"), "export const covered = true;\n");
-    fs.appendFileSync(path.join(child, "src", "two.ts"), "export const more = 1;\n");
-    const dirty = snapshot();
-    const approved = acceptedPoint(accepted, dirty);
-    // Taking that work back out is new work, although the files again match the commit below.
-    fs.rmSync(path.join(child, "test", "foo.test.ts"));
-    git(child, "checkout", "--", "src/two.ts");
-    assert.deepEqual(ownChanges(child, approved, snapshot()).files, [
-      "src/two.ts",
-      "test/foo.test.ts",
-    ]);
-    // Dropping it with a forced checkout of the branch below is new work too. The file then
-    // matches the commit that was checked out, but the approved edit is in no commit.
-    fs.writeFileSync(path.join(child, "test", "foo.test.ts"), "export const covered = true;\n");
-    fs.appendFileSync(path.join(child, "src", "two.ts"), "export const more = 1;\n");
-    git(child, "checkout", "-f", "feat/child");
-    const dropped = ownChanges(child, approved, snapshot());
-    assert.deepEqual(dropped.files, ["src/two.ts"]);
-    assert.deepEqual(dropped.leftBehind, ["src/two.ts"]);
-    git(child, "checkout", "feat/child-2");
-    // Committing the approved work changes nothing the overseer has not seen.
-    fs.writeFileSync(path.join(child, "test", "foo.test.ts"), "export const covered = true;\n");
-    fs.appendFileSync(path.join(child, "src", "two.ts"), "export const more = 1;\n");
-    git(child, "add", ".");
-    git(child, "commit", "-m", "approved work");
-    const committed = snapshot();
-    assert.equal(committed.tree, dirty.tree);
-    assert.deepEqual(ownChanges(child, approved, committed).files, []);
-
-    // Work committed on a side branch and left there still counts, until the overseer approves it.
-    const beforeSide = acceptedPoint(approved, committed);
-    git(child, "checkout", "-b", "feat/side");
-    fs.writeFileSync(path.join(child, "src", "side.ts"), "export const side = 1;\n");
-    git(child, "add", ".");
-    git(child, "commit", "-m", "side work");
-    git(child, "checkout", "feat/child-2");
-    const back = snapshot();
-    const left = ownChanges(child, beforeSide, back);
-    assert.deepEqual(left.files, ["src/side.ts"]);
-    assert.deepEqual(left.leftBehind, ["src/side.ts"]);
-    const afterSide = acceptedPoint(beforeSide, back);
-    // Looking at commits made in other worktrees after launch, and coming back, lists nothing.
-    git(child, "checkout", "--detach", "feat/sibling");
-    git(child, "checkout", "--detach", "main");
-    git(child, "checkout", "feat/child-2");
-    assert.deepEqual(ownChanges(child, afterSide, snapshot()).files, []);
-    // Measured from launch, as the completed run reports it, all of the child's work is listed.
-    assert.deepEqual(ownChanges(child, launch, snapshot()).files, [
-      "src/[id].ts",
-      "src/allowed.ts",
-      "src/shared.ts",
-      "src/side.ts",
-      "src/two.ts",
-      "test/foo.test.ts",
-    ]);
-
-    // An accepted working tree is an object that no ref holds. Once it is pruned the changes
-    // since then cannot be computed, and that is reported instead of "no changes".
-    fs.writeFileSync(path.join(child, "README.md"), "accepted drift\n");
-    const unreferenced = acceptedPoint(afterSide, snapshot());
-    fs.writeFileSync(path.join(child, "README.md"), "later drift\n");
-    assert.deepEqual(ownChanges(child, unreferenced, snapshot()).files, ["README.md"]);
-    git(child, "prune", "--expire=now");
-    assert.deepEqual(ownChanges(child, unreferenced, snapshot()).files, [
-      "(git-status-unavailable)",
-    ]);
-    // The checkpoint pauses for it whatever the scope allows.
-    assert.deepEqual(
-      tripwires({
-        cwd: child,
-        contract: { scope: ["*"], verification: ["npm test"] },
-        baseline: unreferenced,
-        current: snapshot(),
-      }),
-      {
-        kind: "loop_violation",
-        summary: "Git status became unavailable during supervised run.",
-      },
-    );
-  },
-);
-
-const STEER_APPROVE_OR_STOP =
-  'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.';
-
-type JudgeChoice = "compliant" | "scope_violation" | "primitive_violation";
-const mutatingTurn = { toolResults: [{ toolName: "bash", isError: false }] };
-const manyLines = (name: string): string =>
-  `${Array.from({ length: 130 }, (_, i) => `export const ${name}${i} = ${i};`).join("\n")}\n`;
-
-type JudgeResponse =
-  | JudgeChoice
-  | "request_failed"
-  | { readonly error: string }
-  | { readonly noVerdict: true };
-
-/**
- * A supervised run on `feat/work` of a real repository, with the sentinel attached through the
- * native extension loader and classifiers that answer what `verdict` returns. A request fails
- * when `verdict` returns `request_failed` or `{ error }`, and omits a verdict for `{ noVerdict }`.
- */
-async function supervisedRun(
-  t: TestContext,
-  options: {
-    verdict: (diff: string, classifier: string) => JudgeResponse;
-    /** Classifiers exposed by the registry. Defaults to `google/gemini-decision-1`. */
-    classifiers?: readonly ClassifierModel<ClassifierApi>[];
-    /** Whether the classifier is available. It is, unless this says otherwise. */
-    available?: () => boolean;
-    /** The cancellation signal of the child's active run, when the test has one. */
-    signal?: () => AbortSignal | undefined;
-    /** Optional launch-time overseer override (pass `null` for a contracted run launched with overseer off). */
-    overseer?: Launch["overseer"] | null;
-    /** Hook run inside classify before answering, for testing mid-request aborts. */
-    onClassify?: (signal: AbortSignal | undefined) => Promise<void> | void;
-  },
-) {
-  const repo = initGitRepo(t);
-  execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: repo, stdio: "ignore" });
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-sentinel-runs-"));
-  t.after(() => {
-    fs.rmSync(base, { recursive: true, force: true });
-  });
-  const owner = SessionManager.inMemory().getSessionId();
-  const baseLaunch = sampleLaunch(base, repo, owner);
-  let launch: Launch = baseLaunch;
-  if (options.overseer === null) {
-    const { overseer: _removed, ...rest } = baseLaunch;
-    launch = rest;
-  } else if (options.overseer !== undefined) {
-    launch = { ...baseLaunch, overseer: options.overseer };
-  }
-  const journal = SessionManager.inMemory();
-  journal.appendMessage({
-    role: "user",
-    content: "Prompt from the conversation copied into the child",
-    timestamp: 1,
-  });
-  const baseline = new Set(journal.getBranch().map((entry) => entry.id));
-  journal.appendMessage({ role: "user", content: launch.prompt, timestamp: 2 });
-  // A failed assertion must not leave a paused child waiting for its overseer.
-  let ended = false;
-  t.after(() => {
-    ended = true;
-  });
-  const submittedCorrections: SteerCommand[] = [];
-  const sentinel = new OverseerSentinel({
-    base,
-    activeLaunch: () => launch,
-    activeRunBaseline: () => baseline,
-    isStopping: () => ended,
-    queueCorrections: (commands) => {
-      submittedCorrections.push(...commands);
+      const outcome = await evaluateLiveSkeptic(base, launch, {
+        modelRegistry: registry,
+        judgeSpec: "auto",
+        ownerContext: undefined,
+        taskPrompt: launch.prompt,
+        guidance: [],
+        changedFiles: ["src/recovery.ts"],
+        diff: sampleDiff,
+        failed: new Set(),
+        signal: undefined,
+      });
+      assert.equal(aborted, true);
+      assert.equal(outcome.kind, "disabled");
     },
-  });
-  const loader = new DefaultResourceLoader({
-    cwd: repo,
-    agentDir: getPiAgentDir(),
-    settingsManager: SettingsManager.inMemory(),
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    extensionFactories: [
-      (pi: ExtensionAPI) => {
-        sentinel.attach(pi);
+  );
+
+  nodeIt(
+    "validates report_findings tool calls via pi-ai and sends the full diff without client-side slicing",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-tool-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      const launch = makeLaunch(base, repo);
+
+      const model = makeModel("cloudflare-ai-gateway", "claude-haiku-5-5", false);
+      let capturedPrompt = "";
+      const tailMarker = "+export const tailSentinel = true;";
+      const bigDiff = `${sampleDiff}\n+${"x".repeat(30_000)}\n${tailMarker}\n`;
+      const registry = makeStreamRegistry([model], async (_model, prompt) => {
+        capturedPrompt = prompt;
+        return {
+          ...fakeAssistant(""),
+          content: [
+            {
+              type: "toolCall",
+              id: "tc-1",
+              name: "report_findings",
+              arguments: {
+                action: "flag",
+                findings: [
+                  {
+                    kind: "dropped_behavior",
+                    file: "src/recovery.ts",
+                    excerpt:
+                      "const priorWindow = notes.primaryNotePath === undefined ? history : undefined;",
+                    why: "Drops checkpoint unconditionally.",
+                    blocking: true,
+                  },
+                ],
+              },
+            },
+          ],
+        };
+      });
+
+      const outcome = await evaluateLiveSkeptic(base, launch, {
+        modelRegistry: registry,
+        judgeSpec: "auto",
+        ownerContext: undefined,
+        taskPrompt: launch.prompt,
+        guidance: [],
+        changedFiles: ["src/recovery.ts"],
+        diff: bigDiff,
+        failed: new Set(),
+        signal: undefined,
+      });
+      assert.equal(outcome.kind, "verdict");
+      assert.equal(outcome.verdict.blocking.length, 1);
+      assert.ok(capturedPrompt.includes(tailMarker));
+    },
+  );
+});
+
+nodeDescribe("overseer controller & owner context", () => {
+  nodeIt(
+    "does not require a contract when overseer is enabled and captures recent owner messages",
+    async (t) => {
+      assert.deepEqual(splitModelSpec("cloudflare-ai-gateway/gpt-6-luna:medium"), {
+        defaultModel: "cloudflare-ai-gateway/gpt-6-luna",
+        defaultThinking: "medium",
+      });
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-ctrl-"));
+      let controller: OverseerController | undefined;
+      const native = await createNativeSessionFixture({
+        cwd: root,
+        agentDir: root,
+        configure: (pi) => {
+          controller = new OverseerController(pi);
+          controller.register();
+        },
+      });
+      t.after(async () => {
+        await native.dispose();
+        fs.rmSync(root, { recursive: true, force: true });
+      });
+
+      const command = native.extensions[0]?.commands.get("overseer");
+      assert.ok(command !== undefined && controller !== undefined);
+      await command.handler("on", native.session.extensionRunner.createCommandContext());
+      const prepared = controller.prepareDelegation({ prompt: "Build feature X" });
+      assert.deepEqual(prepared, { overseer: { enabled: true, judge: "auto" } });
+
+      const ownerContext = captureOwnerContext({
+        getBranch: () =>
+          Array.from({ length: 6 }, (_, i) => ({
+            type: "message",
+            id: `u${i + 1}`,
+            parentId: i === 0 ? null : `u${i}`,
+            timestamp: "2026-11-23T00:00:00Z",
+            message: {
+              role: "user",
+              content:
+                i === 5
+                  ? [{ type: "text", text: `Rule 6: ${"z".repeat(3_000)}` }]
+                  : `Rule ${i + 1}: keep earlier owner instruction`,
+              timestamp: i + 1,
+            },
+          })),
+      });
+      assert.ok(ownerContext !== undefined);
+      assert.match(ownerContext, /Rule 1: keep earlier owner instruction/u);
+      assert.match(ownerContext, /Rule 6: zzz/u);
+      assert.ok(ownerContext.length > 3_000);
+    },
+  );
+});
+
+async function waitForEscalation(escFile: string): Promise<Escalation> {
+  for (let i = 0; i < 50; i++) {
+    const esc = read(escFile, escalationSchema);
+    if (esc !== undefined) {
+      return esc;
+    }
+    await delay(20);
+  }
+  throw new Error(`Timed out waiting for escalation at ${escFile}`);
+}
+
+const emptyBoundaryContext = {
+  pendingMessages: [],
+  contextEntries: [],
+  contextMessages: [],
+  llmMessages: [],
+  canContinue: false,
+};
+
+function makeTurnEvent(toolName: string): TurnEndEvent {
+  return {
+    type: "turn_end",
+    turnIndex: 0,
+    message: fakeAssistant("ran tool"),
+    messageEntryId: "m1",
+    toolResultEntryIds: ["tr1"],
+    toolResults: [
+      {
+        role: "toolResult",
+        toolCallId: "t1",
+        toolName,
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+        timestamp: 1,
       },
     ],
-  });
-  await loader.reload();
-  const ext = loader.getExtensions().extensions[0];
-  assert.ok(ext !== undefined);
-
-  const catalog = options.classifiers ?? [makeClassifierModel("google", "gemini-decision-1", 0.03)];
-  /** What the judge received on each call. */
-  const judged: {
-    changedFiles: unknown;
-    acceptedFiles: unknown;
-    taskGuidance: unknown;
-    diff: string;
-  }[] = [];
-  const judgedContracts: unknown[] = [];
-  const ctx = {
-    sessionManager: journal,
-    get signal() {
-      return options.signal?.();
-    },
-    hasPendingMessages: () => false,
-    modelRegistry: {
-      getAvailableOfType: () => Promise.resolve(options.available?.() === false ? [] : catalog),
-      getModelOfType: (_type: "classifier", provider: string, id: string) =>
-        catalog.find((model) => model.provider === provider && model.id === id),
-      classify: async (
-        model: ClassifierModel<ClassifierApi>,
-        context: ClassifierContext,
-        request?: { signal?: AbortSignal },
-      ) => {
-        const { contract, changedFiles, acceptedFiles, taskGuidance, diff } = context.state;
-        const asked = {
-          changedFiles,
-          acceptedFiles,
-          taskGuidance,
-          diff: typeof diff === "string" ? diff : "",
-        };
-        judged.push(asked);
-        judgedContracts.push(contract);
-        await options.onClassify?.(request?.signal);
-        const failure = {
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          timestamp: Date.now(),
-          answers: {},
-        };
-        // As the registry reports a request that its caller's signal cancelled.
-        if (request?.signal?.aborted === true) {
-          return { ...failure, stopReason: "aborted", errorMessage: "aborted" };
-        }
-        const reply = options.verdict(asked.diff, `${model.provider}/${model.id}`);
-        if (reply === "request_failed") {
-          return {
-            ...failure,
-            stopReason: "error",
-            errorMessage: "credits depleted",
-          };
-        }
-        if (typeof reply !== "string") {
-          if ("error" in reply) {
-            return { ...failure, stopReason: "error", errorMessage: reply.error };
-          }
-          return { ...failure, stopReason: "stop" };
-        }
-        return {
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          stopReason: "stop",
-          timestamp: Date.now(),
-          answers: {
-            verdict: {
-              type: "choice",
-              choice: reply,
-              probabilities: {},
-              confidence: 0.9,
-            },
-          },
-        };
-      },
-    },
-  };
-  const emit = async (name: string, event: Record<string, unknown>): Promise<unknown[]> =>
-    Promise.all(
-      (ext.handlers.get(name) ?? []).map((handler) =>
-        handler({ type: name, entries: [], ...event }, ctx),
-      ),
-    );
-  const escPath = path.join(runDirectory(base, launch.id), "escalation.json");
-  /** The escalation the paused child published. Released from the delivery queue after the test. */
-  const paused = async (): Promise<Escalation> => {
-    while (!fs.existsSync(escPath)) {
-      await delay(10);
-    }
-    const escalation = read(escPath, escalationSchema);
-    assert.ok(escalation !== undefined);
-    t.after(() => release(owner, `escalation:${escalation.id}`));
-    return escalation;
-  };
-  /** The notice the overseer receives for the current pause. */
-  const notice = (): string => {
-    const pending = notifications({ sessionManager: SessionManager.inMemory() }, base, owner);
-    const content = pending.notices[0]?.message.content;
-    assert.ok(typeof content === "string");
-    return content;
-  };
-  let steers = 0;
-  const steer = () => {
-    const command = {
-      id: `steer-${++steers}`,
-      runId: launch.id,
-      action: "steer" as const,
-      prompt: "Fix the drift.",
-      createdAt: Date.now(),
-    };
-    assert.equal(sentinel.steerPaused(command), true);
-    return command;
-  };
-  return {
-    repo,
-    base,
-    launch,
-    emit,
-    paused,
-    notice,
-    judged,
-    judgedContracts,
-    escPath,
-    steer,
-    journal,
-    submittedCorrections,
+    entries: [],
+    continue: false,
+    outcome: "completed",
+    context: emptyBoundaryContext,
   };
 }
 
-nodeTest(
-  "the sentinel primes baseline before turn 1 and re-judges unfixed steered drift on settle",
-  async (t) => {
-    const { repo, base, launch, emit, paused, judged, steer, submittedCorrections } =
-      await supervisedRun(t, {
-        verdict: () => "primitive_violation",
+const settleEvent = {
+  type: "agent_before_settle" as const,
+  outcome: "completed" as const,
+  entries: [],
+  continue: false,
+  context: emptyBoundaryContext,
+};
+
+nodeDescribe("overseer sentinel checkpoints", () => {
+  nodeIt(
+    "pauses once for early shape check on substantive edits, skips final_diff when unchanged, and publishes non-blocking notes",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-sent-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      const launch = makeLaunch(base, repo, { overseer: { enabled: true, judge: "auto" } });
+      const corrections: unknown[] = [];
+      let stopping = false;
+      t.after(() => {
+        stopping = true;
+      });
+      const sentinel = new OverseerSentinel({
+        base,
+        activeLaunch: () => launch,
+        activeRunBaseline: () => new Set<string>(),
+        isStopping: () => stopping,
+        queueCorrections: (cmds) => {
+          corrections.push(...cmds);
+        },
+      });
+      const native = await createNativeSessionFixture({
+        cwd: repo,
+        agentDir: base,
+        configure: (pi) => {
+          sentinel.attach(pi);
+        },
+      });
+      t.after(async () => {
+        await native.dispose();
       });
 
-    // Prime baseline BEFORE turn 1 edits anything.
-    await emit("before_agent_start", {});
-
-    // Turn 1 introduces >120 lines of primitive-violating diff inside src/allowed.ts.
-    const bigViolation = Array.from({ length: 130 }, (_, i) => `export const v${i} = ${i};`).join(
-      "\n",
-    );
-    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), `${bigViolation}\n`);
-
-    const turnPromise = emit("turn_end", {
-      toolResults: [{ toolName: "write", isError: false }],
-    });
-    // Wait until escalation.json appears, then steer (do NOT approve).
-    const firstEsc = await paused();
-    assert.deepEqual([firstEsc.strikes, firstEsc.steers], [1, 0]);
-    const firstCorrection = steer();
-    await turnPromise;
-    assert.equal(judged.length, 1);
-    assert.deepEqual(submittedCorrections, [firstCorrection]);
-
-    // Child tries to settle WITHOUT changing the drifted digest -> re-judged and caught!
-    const settlePromise = emit("agent_before_settle", {
-      outcome: "completed",
-      entries: [],
-      context: { pendingMessages: [] },
-    });
-    const secondEsc = await paused();
-    assert.deepEqual([secondEsc.strikes, secondEsc.steers], [2, 1]);
-    const correction = steer();
-    await settlePromise;
-    assert.equal(judged.length, 2);
-    assert.deepEqual(submittedCorrections, [firstCorrection, correction]);
-    const approvePromise = emit("agent_before_settle", {
-      outcome: "completed",
-      entries: [],
-      context: { pendingMessages: [] },
-    });
-    const thirdEsc = await paused();
-    assert.deepEqual([thirdEsc.strikes, thirdEsc.steers], [3, 2]);
-    resolveActiveEscalation(base, launch, "approved");
-    const approvedResults = await approvePromise;
-    assert.deepEqual(approvedResults, [undefined]);
-
-    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), `${bigViolation}\n// strike 4\n`);
-    const fallbackPromise = emit("agent_before_settle", {
-      outcome: "completed",
-      entries: [],
-      context: { pendingMessages: [] },
-    });
-    // The approval of the third pause is not a correction.
-    const fourthEsc = await paused();
-    assert.deepEqual([fourthEsc.strikes, fourthEsc.steers], [4, 2]);
-    steer();
-    await fallbackPromise;
-  },
-);
-
-nodeTest(
-  "a pause shows the work since the last approval, and the judge sees the work since the last accepted state",
-  async (t) => {
-    const { repo, base, launch, emit, paused, notice, judged, escPath, steer, journal } =
-      await supervisedRun(t, {
-        verdict: (diff) => (diff.includes("FLAG") ? "primitive_violation" : "compliant"),
-      });
-    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
-    await emit("before_agent_start", {});
-
-    // 130 new lines reach the judge at once. It finds them clean, so the child is not paused.
-    fs.writeFileSync(path.join(repo, "src", "big.ts"), manyLines("big"));
-    await emit("turn_end", mutatingTurn);
-    assert.equal(judged.length, 1);
-    assert.equal(fs.existsSync(escPath), false);
-
-    // An out-of-scope edit pauses the child. The overseer has approved nothing yet, so the pause
-    // shows everything since launch, including the work the judge cleared.
-    fs.writeFileSync(path.join(repo, "README.md"), "drift\n");
-    const firstTurn = emit("turn_end", mutatingTurn);
-    const first = await paused();
-    assert.equal(first.kind, "scope_violation");
-    assert.deepEqual(first.changedFiles, ["README.md", "src/big.ts"]);
-    // The notice gives every file with its line counts, names the part that no check has cleared,
-    // and, because the diff does not fit, the command that prints all of it.
-    assert.ok(first.diffCommand !== undefined);
-    assert.match(first.diffCommand, /^git -C '[^']+' diff [0-9a-f]{40} [0-9a-f]{40}$/u);
-    assert.doesNotMatch(first.diffExcerpt, /big129/u);
-    const whole = execSync(first.diffCommand, { encoding: "utf8" });
-    assert.match(whole, /^\+drift$/mu);
-    assert.match(whole, /^\+export const big129 = 129;$/mu);
-    assert.equal(
-      notice(),
-      [
-        `[Overseer escalation #1 - scope_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
-        "Reason: Modified out-of-scope path(s): README.md (allowed scope: src).",
-        "Changes since launch:",
-        "  +1 -1 README.md",
-        "  +130 -0 src/big.ts",
-        "Changed since the last clean check, look here first: README.md",
-        first.diffExcerpt.trimEnd(),
-        `[Diff cut. All of it: ${first.diffCommand}]`,
-        STEER_APPROVE_OR_STOP,
-      ].join("\n"),
-    );
-    resolveActiveEscalation(base, launch, "approved");
-    // An older child still running accepts an approval by this snapshot identifier.
-    assert.equal(
-      read(
-        path.join(runDirectory(base, launch.id), "escalation-resolution.json"),
-        escalationResolutionSchema,
-      )?.diffDigest,
-      first.diffDigest,
-    );
-    await firstTurn;
-
-    // A turn that changes nothing, and then committing the approved work, raise nothing.
-    await emit("turn_end", mutatingTurn);
-    git(repo, "add", ".");
-    git(repo, "commit", "-m", "approved work");
-    await emit("turn_end", mutatingTurn);
-    assert.equal(fs.existsSync(escPath), false);
-
-    // The next pause covers only the work after that approval.
-    fs.mkdirSync(path.join(repo, "docs"));
-    fs.writeFileSync(path.join(repo, "docs", "NEW.md"), "new\n");
-    fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "export const later = 1;\n");
-    const secondTurn = emit("turn_end", mutatingTurn);
-    const second = await paused();
-    assert.deepEqual(second.changedFiles, ["docs/NEW.md", "src/allowed.ts"]);
-    assert.match(second.diffExcerpt, /docs\/NEW\.md/u);
-    assert.doesNotMatch(second.diffExcerpt, /README\.md|big\.ts/u);
-    assert.equal(
-      notice(),
-      [
-        `[Overseer escalation #2 - scope_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
-        "Reason: Modified out-of-scope path(s): docs/NEW.md (allowed scope: src).",
-        "Changes since your last approval:",
-        "  +1 -0 docs/NEW.md",
-        "  +1 -0 src/allowed.ts",
-        "Approved earlier in this run (those changes are not shown): README.md, src/big.ts",
-        "diff --git a/docs/NEW.md b/docs/NEW.md",
-        "new file mode 100644",
-        "index 0000000..3e75765",
-        "--- /dev/null",
-        "+++ b/docs/NEW.md",
-        "@@ -0,0 +1 @@",
-        "+new",
-        "diff --git a/src/allowed.ts b/src/allowed.ts",
-        "index ad1d380..5dc3114 100644",
-        "--- a/src/allowed.ts",
-        "+++ b/src/allowed.ts",
-        "@@ -1 +1,2 @@",
-        " export const x = 1;",
-        "+export const later = 1;",
-        STEER_APPROVE_OR_STOP,
-      ].join("\n"),
-    );
-    resolveActiveEscalation(base, launch, "approved");
-    await secondTurn;
-    assert.equal(judged.length, 1);
-
-    // Only the delegating session's Intercom message is task authority, even when a sibling
-    // shares that session's broker group. The inherited prompt is outside this native run.
-    const guidance = "Reuse the existing query helper if it covers this case.";
-    const intercomEntry = (id: string, text: string, from: { parentSessionId?: string }) => {
-      journal.appendCustomMessageEntry("intercom_message", text, true, {
-        from: { id, cwd: repo, model: "fixture", rootSessionId: launch.owner, ...from },
-        message: { id, timestamp: 3, content: { text } },
-        bodyText: text,
-      });
-    };
-    intercomEntry("parent-peer", guidance, {});
-    intercomEntry("other-child", "Disregard the query helper.", { parentSessionId: launch.owner });
-    journal.appendCustomMessageEntry("application", "Use a new API.", true);
-    journal.appendCustomMessageEntry("overseer-correction", "Use a new API.", true, {
-      commandId: "not-admitted",
-    });
-    // Before settling the judge sees the new work only, and flags it.
-    fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "// FLAG\n");
-    const flaggedSettle = emit("agent_before_settle", settle);
-    const third = await paused();
-    assert.equal(third.kind, "primitive_violation");
-    assert.deepEqual(third.changedFiles, ["src/allowed.ts"]);
-    // `src/allowed.ts` was approved and then changed again. The notice shows the new change,
-    // and says of the approved files only that their earlier changes are not shown. This is a
-    // third pause after two approvals: no correction is counted, and nothing advises stopping.
-    assert.deepEqual([third.strikes, third.steers], [3, 0]);
-    assert.equal(
-      notice(),
-      [
-        `[Overseer escalation #3 - review needed] Run run-overseer-1 (tag-store) paused in ${repo}.`,
-        "Reason: Review needed: google/gemini-decision-1 asked for a check but did not identify a specific hunk or rule.",
-        "Latest task-owner guidance (for context, not a cited rule):",
-        guidance,
-        "Changes since your last approval:",
-        "  +1 -0 src/allowed.ts",
-        "Approved earlier in this run (those changes are not shown): README.md, docs/NEW.md, src/allowed.ts, src/big.ts",
-        "diff --git a/src/allowed.ts b/src/allowed.ts",
-        "index 5dc3114..46469ae 100644",
-        "--- a/src/allowed.ts",
-        "+++ b/src/allowed.ts",
-        "@@ -1,2 +1,3 @@",
-        " export const x = 1;",
-        " export const later = 1;",
-        "+// FLAG",
-        STEER_APPROVE_OR_STOP,
-      ].join("\n"),
-    );
-    assert.equal(judged.length, 2);
-    assert.deepEqual(judged[1], {
-      changedFiles: ["src/allowed.ts"],
-      acceptedFiles: ["README.md", "docs/NEW.md", "src/allowed.ts", "src/big.ts"],
-      taskGuidance: [guidance],
-      diff: [
-        "diff --git a/src/allowed.ts b/src/allowed.ts",
-        "index 5dc3114..46469ae 100644",
-        "--- a/src/allowed.ts",
-        "+++ b/src/allowed.ts",
-        "@@ -1,2 +1,3 @@",
-        " export const x = 1;",
-        " export const later = 1;",
-        "+// FLAG",
-        "",
-      ].join("\n"),
-    });
-    const command = steer();
-    await flaggedSettle;
-    journal.appendCustomMessageEntry("overseer-correction", "Skip the correction.", true, {
-      commandId: command.id,
-    });
-
-    // The steered child leaves the flagged state as it is: the judge is not asked again.
-    for (let turn = 0; turn < 5; turn += 1) {
-      await emit("turn_end", mutatingTurn);
-    }
-    assert.equal(judged.length, 2);
-    assert.equal(fs.existsSync(escPath), false);
-
-    // Once the state changes the pending turn trigger asks the judge, which clears the fix.
-    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "export const fixed = 1;\n");
-    await emit("turn_end", mutatingTurn);
-    assert.equal(judged.length, 3);
-    assert.deepEqual(judged[2]?.taskGuidance, [guidance]);
-    // Every existing trigger still reaches the judge when there is new work: the fourth mutating turn,
-    for (let turn = 0; turn < 3; turn += 1) {
-      fs.appendFileSync(path.join(repo, "src", "allowed.ts"), `export const step${turn} = 1;\n`);
-      await emit("turn_end", mutatingTurn);
-    }
-    assert.equal(judged.length, 3);
-    fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "export const fourth = 1;\n");
-    await emit("turn_end", mutatingTurn);
-    assert.equal(judged.length, 4);
-    // 120 or more new lines,
-    fs.writeFileSync(path.join(repo, "src", "bulk.ts"), manyLines("bulk"));
-    await emit("turn_end", mutatingTurn);
-    assert.equal(judged.length, 5);
-    // and the checkpoint before the run settles.
-    fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "export const last = 1;\n");
-    assert.deepEqual(await emit("agent_before_settle", settle), [undefined]);
-    assert.equal(judged.length, 6);
-    assert.equal(fs.existsSync(escPath), false);
-  },
-);
-
-nodeTest("an approved base-branch issue is not raised again for later work", async (t) => {
-  const { repo, base, launch, emit, paused, escPath } = await supervisedRun(t, {
-    verdict: () => "compliant",
-  });
-  await emit("before_agent_start", {});
-
-  fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "export const y = 1;\n");
-  git(repo, "commit", "-am", "work");
-  git(repo, "branch", "-f", "main", "HEAD");
-  const turn = emit("turn_end", mutatingTurn);
-  const pause = await paused();
-  assert.equal(pause.kind, "branch_violation");
-  assert.match(pause.summary, /committed directly onto base branch 'main'/u);
-  resolveActiveEscalation(base, launch, "approved");
-  await turn;
-
-  fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "export const z = 1;\n");
-  git(repo, "commit", "-am", "more work");
-  await emit("turn_end", mutatingTurn);
-  assert.equal(fs.existsSync(escPath), false);
-});
-
-nodeTest(
-  "a judge whose requests fail does not pause the run, and the completion notice says so",
-  async (t) => {
-    let answer: JudgeChoice | "request_failed" = "request_failed";
-    let available = true;
-    let runSignal: AbortSignal | undefined;
-    const { repo, base, launch, emit, paused, judged, escPath, steer } = await supervisedRun(t, {
-      verdict: () => answer,
-      available: () => available,
-      signal: () => runSignal,
-    });
-    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
-    const unavailableFile = path.join(runDirectory(base, launch.id), "judge-unavailable.json");
-    /** What the parent is sent about the run. */
-    const notices = (): string[] =>
-      notifications({ sessionManager: SessionManager.inMemory() }, base, launch.owner).notices.map(
-        ({ message }) => (typeof message.content === "string" ? message.content : ""),
+      const haiku = makeModel("cloudflare-ai-gateway", "claude-haiku-5-5", false);
+      const streamReg = makeStreamRegistry([haiku], async () =>
+        fakeAssistant(
+          JSON.stringify({
+            action: "flag",
+            findings: [
+              {
+                kind: "invented_constraint",
+                file: "src/follow.ts",
+                excerpt: "export const extraTimeout = 9999;",
+                why: "Unneeded timeout constant.",
+                blocking: false,
+              },
+            ],
+          }),
+        ),
       );
-    /** Whether a checkpoint paused the child. The handlers of a paused child do not return. */
-    const pauses = async (checkpoint: Promise<unknown>): Promise<boolean> => {
-      const watch = new AbortController();
-      const pause = async (): Promise<boolean> => {
-        while (!watch.signal.aborted && !fs.existsSync(escPath)) {
-          await delay(10);
-        }
-        return true;
-      };
-      const stopped = await Promise.race([checkpoint.then(() => false), pause()]);
-      watch.abort();
-      return stopped;
-    };
-    await emit("before_agent_start", {});
+      Object.assign(native.context.modelRegistry, streamReg);
 
-    // 130 new lines reach the judge, and its request fails. The child is not paused, and the
-    // parent is sent nothing.
-    fs.writeFileSync(path.join(repo, "src", "big.ts"), manyLines("big"));
-    assert.equal(await pauses(emit("turn_end", mutatingTurn)), false);
-    assert.equal(judged.length, 1);
-    assert.deepEqual(notices(), []);
-    assert.equal(fs.existsSync(unavailableFile), true);
+      const ext = native.extensions[0];
+      const turnEnd = ext?.handlers.get("turn_end")?.[0];
+      const beforeSettle = ext?.handlers.get("agent_before_settle")?.[0];
+      assert.ok(turnEnd !== undefined && beforeSettle !== undefined);
 
-    // The scope check still pauses the child. The overseer approves the pause, which shows all
-    // the work so far: no work is left that waits for a judge.
-    fs.writeFileSync(path.join(repo, "README.md"), "drift\n");
-    const drift = emit("turn_end", mutatingTurn);
-    assert.equal((await paused()).kind, "scope_violation");
-    resolveActiveEscalation(base, launch, "approved");
-    await drift;
-    assert.equal(fs.existsSync(unavailableFile), false);
+      // Edit 2 files -> triggers early shape_check pause.
+      fs.writeFileSync(path.join(repo, "src", "app.ts"), "export const a = 10;\n");
+      fs.writeFileSync(path.join(repo, "src", "b.ts"), "export const b = 20;\n");
 
-    // The child's run is cancelled while later work is with the judge. The cancelled request is
-    // not a verdict and not a fault of the judge: no pause, and nothing to report.
-    fs.writeFileSync(path.join(repo, "src", "more.ts"), manyLines("more"));
-    runSignal = AbortSignal.abort();
-    assert.equal(await pauses(emit("turn_end", mutatingTurn)), false);
-    assert.equal(judged.length, 2);
-    assert.equal(fs.existsSync(unavailableFile), false);
-    runSignal = undefined;
+      const shapePromise = Promise.resolve(turnEnd(makeTurnEvent("write"), native.context));
+      const escFile = path.join(runDirectory(base, launch.id), "escalation.json");
+      const esc = await waitForEscalation(escFile);
+      assert.equal(esc.kind, "shape_check");
+      assert.equal(checkpointKindLabel(esc), "early shape check");
+      assert.equal(checkpointEvidenceLines(esc)[0]?.includes("Early shape check"), true);
 
-    // The request fails again for later work.
-    fs.writeFileSync(path.join(repo, "src", "later.ts"), manyLines("later"));
-    assert.equal(await pauses(emit("turn_end", mutatingTurn)), false);
-    assert.equal(judged.length, 3);
-    assert.equal(fs.existsSync(unavailableFile), true);
+      resolveActiveEscalation(base, launch, "approved");
+      await shapePromise;
+      assert.equal(
+        read(
+          path.join(runDirectory(base, launch.id), "escalation-resolution.json"),
+          escalationResolutionSchema,
+        )?.verdict,
+        "approved",
+      );
 
-    // Before the run settles a classifier answers again. It is asked about all the work that no
-    // judge answered for, and flags it. That work is judged: nothing is left to report.
-    answer = "primitive_violation";
-    const flagged = emit("agent_before_settle", settle);
-    assert.equal((await paused()).kind, "primitive_violation");
-    assert.equal(judged.length, 4);
-    assert.match(judged[3]?.diff ?? "", /^\+export const more129 = 129;$/mu);
-    assert.equal(fs.existsSync(unavailableFile), false);
-    steer();
-    await flagged;
+      // No new changes -> agent_before_settle does not double-pause!
+      assert.equal(await beforeSettle(settleEvent, native.context), undefined);
 
-    // The child changes the flagged work, and no classifier is available at the checkpoint
-    // before the run settles: nothing can be asked. The run ends without a pause. Its completion
-    // notice still says once that no judge gave a verdict.
-    available = false;
-    fs.appendFileSync(path.join(repo, "src", "more.ts"), "export const last = 1;\n");
-    assert.equal(await pauses(emit("agent_before_settle", settle)), false);
-    assert.equal(judged.length, 4);
-    write(path.join(runDirectory(base, launch.id), "result.json"), {
-      id: launch.id,
-      owner: launch.owner,
-      status: "completed",
-      endedAt: Date.now(),
-      changedFiles: ["README.md", "src/big.ts", "src/later.ts", "src/more.ts"],
-    });
-    const completion = notices();
-    assert.equal(completion.length, 1);
-    assert.deepEqual(
-      completion[0]?.split("\n").filter((line) => line.startsWith("[Overseer ")),
-      [
-        "[Overseer judge unavailable: no classifier judged the last changes of this run against its contract. The scope, branch and error-loop checks ran. No classifier model is available for the overseer judge.]",
-      ],
-    );
-  },
-);
+      // New change + final settle -> runs skeptic (emits non-blocking note) and pauses for final_diff!
+      fs.writeFileSync(path.join(repo, "src", "follow.ts"), "export const extraTimeout = 9999;\n");
+      const finalPromise = Promise.resolve(beforeSettle(settleEvent, native.context));
+      const finalEsc = await waitForEscalation(escFile);
+      assert.equal(finalEsc.kind, "final_diff");
+      assert.equal(finalEsc.since, "checkpoint");
+      assert.deepEqual(finalEsc.changedFiles, ["src/follow.ts"]);
 
-nodeTest("a pause names work the child committed and then left on another branch", async (t) => {
-  const { repo, base, launch, emit, paused, notice } = await supervisedRun(t, {
-    verdict: () => "compliant",
-  });
-  await emit("before_agent_start", {});
-  git(repo, "checkout", "-b", "feat/side");
-  fs.mkdirSync(path.join(repo, "docs"));
-  fs.writeFileSync(path.join(repo, "docs", "SIDE.md"), "side\n");
-  git(repo, "add", ".");
-  git(repo, "commit", "-m", "side work");
-  git(repo, "checkout", "feat/work");
+      const notes = readOverseerNotes(base, launch.id);
+      assert.equal(notes.length, 1);
+      assert.equal(notes[0]?.findings[0]?.file, "src/follow.ts");
 
-  const turn = emit("turn_end", mutatingTurn);
-  const escalation = await paused();
-  assert.deepEqual(escalation.changedFiles, ["docs/SIDE.md"]);
-  assert.equal(
-    notice(),
-    [
-      `[Overseer escalation #1 - scope_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
-      "Reason: Modified out-of-scope path(s): docs/SIDE.md (allowed scope: src).",
-      "Changes since launch:",
-      "  docs/SIDE.md",
-      "Work on these files is not in the diff (committed on a branch the child left, or dropped by a checkout): docs/SIDE.md",
-      STEER_APPROVE_OR_STOP,
-    ].join("\n"),
+      resolveActiveEscalation(base, launch, "approved", {
+        id: "cmd-steer-1",
+        prompt: "Remove extraTimeout",
+      });
+      assert.deepEqual(await finalPromise, { continue: true });
+      assert.equal(corrections.length, 1);
+
+      assert.equal(readJudgeCheckpoints(base, launch.id).length, 1);
+      assert.equal(judgeUnavailable(base, launch.id), undefined);
+      assert.equal(
+        inspectJudgeCheckpoints(base, launch.id, (n) => String(n)).lines[0]?.includes(
+          "Overseer checkpoints",
+        ),
+        true,
+      );
+    },
   );
-  resolveActiveEscalation(base, launch, "approved");
-  await turn;
 
-  // More work goes to the side branch, and the same path is then written again in the working
-  // tree. The notice shows the new file, and says that other work on it is not in the diff.
-  git(repo, "checkout", "feat/side");
-  fs.writeFileSync(path.join(repo, "docs", "SIDE.md"), "side two\n");
-  git(repo, "commit", "-am", "more side work");
-  git(repo, "checkout", "feat/work");
-  fs.mkdirSync(path.join(repo, "docs"), { recursive: true });
-  fs.writeFileSync(path.join(repo, "docs", "SIDE.md"), "rewritten\n");
-  const again = emit("turn_end", mutatingTurn);
-  await paused();
-  assert.equal(
-    notice(),
-    [
-      `[Overseer escalation #2 - scope_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
-      "Reason: Modified out-of-scope path(s): docs/SIDE.md (allowed scope: src).",
-      "Changes since your last approval:",
-      "  +1 -0 docs/SIDE.md",
-      "Work on these files is not in the diff (committed on a branch the child left, or dropped by a checkout): docs/SIDE.md",
-      "Approved earlier in this run (those changes are not shown): docs/SIDE.md",
-      "diff --git a/docs/SIDE.md b/docs/SIDE.md",
-      "new file mode 100644",
-      "index 0000000..d597f6c",
-      "--- /dev/null",
-      "+++ b/docs/SIDE.md",
-      "@@ -0,0 +1 @@",
-      "+rewritten",
-      STEER_APPROVE_OR_STOP,
-    ].join("\n"),
-  );
-  resolveActiveEscalation(base, launch, "approved");
-  await again;
-});
-
-nodeTest(
-  "pause-on-drift publishes escalation notice to parent and resumes when parent steers",
-  async (t) => {
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-pause-"));
-    t.after(() => {
-      fs.rmSync(temp, { recursive: true, force: true });
+  nodeIt("skips shape_check and final_diff for readOnly runs", async (t) => {
+    const repo = initGitRepo(t);
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-ro-"));
+    t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+    const launch = makeLaunch(base, repo, { readOnly: true });
+    const corrections: unknown[] = [];
+    const sentinel = new OverseerSentinel({
+      base,
+      activeLaunch: () => launch,
+      activeRunBaseline: () => new Set<string>(),
+      isStopping: () => false,
+      queueCorrections: (cmds) => {
+        corrections.push(...cmds);
+      },
+    });
+    const native = await createNativeSessionFixture({
+      cwd: repo,
+      agentDir: base,
+      configure: (pi) => {
+        sentinel.attach(pi);
+      },
+    });
+    t.after(async () => {
+      await native.dispose();
     });
 
-    const parentSession = SessionManager.inMemory();
-    const owner = parentSession.getSessionId();
-    t.after(() => {
-      release(owner, "escalation:esc-1");
-    });
+    const ext = native.extensions[0];
+    const turnEnd = ext?.handlers.get("turn_end")?.[0];
+    const beforeSettle = ext?.handlers.get("agent_before_settle")?.[0];
+    assert.ok(turnEnd !== undefined && beforeSettle !== undefined);
 
-    const base = path.join(temp, "runs");
-    const launch = sampleLaunch(base, temp, owner);
-    const escalation: Escalation = {
-      id: "esc-1",
-      runId: launch.id,
-      owner,
-      at: Date.now(),
-      strikes: 1,
-      kind: "primitive_violation",
-      summary: "Custom Map cache added instead of createTagStore",
-      changedFiles: ["src/allowed.ts"],
-      diffExcerpt: "+const cache = new Map();",
-      diffDigest: "digest-1",
-    };
+    fs.writeFileSync(path.join(repo, "src", "app.ts"), "changed\n");
+    fs.writeFileSync(path.join(repo, "src", "b.ts"), "changed\n");
 
-    const pause = new EscalationPause(launch.id);
-    const waiting = pause.wait(base, escalation, () => false);
-
-    const reconciled = notifications({ sessionManager: parentSession }, base, owner);
-    assert.equal(reconciled.notices.length, 1);
-    assert.equal(reconciled.notices[0]?.message.customType, "agent-escalation");
-    // A child from before the notice fields existed still gets its files and excerpt printed.
-    assert.equal(
-      reconciled.notices[0].message.content,
-      [
-        `[Overseer escalation #1 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${temp}.`,
-        "Reason: Custom Map cache added instead of createTagStore",
-        "Changed files: src/allowed.ts",
-        "+const cache = new Map();",
-        STEER_APPROVE_OR_STOP,
-      ].join("\n"),
-    );
-    assert.equal(
-      reconciled.awaited.has(path.join(runDirectory(base, launch.id), "escalation.json")),
-      true,
-    );
-    const command = {
-      id: "steer-1",
-      runId: launch.id,
-      action: "steer" as const,
-      prompt: "Fix drift immediately",
-      createdAt: Date.now(),
-    };
-    assert.equal(pause.steer(command), true);
-    assert.deepEqual(await waiting, { verdict: "steered", commands: [command] });
+    await turnEnd(makeTurnEvent("bash"), native.context);
+    assert.equal(await beforeSettle(settleEvent, native.context), undefined);
+    assert.equal(corrections.length, 0);
     assert.equal(fs.existsSync(path.join(runDirectory(base, launch.id), "escalation.json")), false);
-  },
-);
+  });
 
-nodeTest(
-  "sentinel tripwires and classifier judge read amended contracts dynamically on live and paused runs",
-  async (t) => {
-    const { repo, base, launch, emit, paused, judgedContracts, escPath, steer } =
-      await supervisedRun(t, {
-        verdict: () => "compliant",
+  nodeIt(
+    "fails closed when a snapshot tree is pruned and recovers once the parent approves",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-prune-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      // Dirty working tree before session_start so baseline write-tree creates an unreferenced tree object.
+      fs.writeFileSync(path.join(repo, "src", "app.ts"), "export const a = 2;\n");
+      const launch = makeLaunch(base, repo, { overseer: { enabled: true, judge: "off" } });
+      let stopping = false;
+      t.after(() => {
+        stopping = true;
       });
-    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
-    fs.mkdirSync(path.join(repo, "test", "unit"), { recursive: true });
-    await emit("before_agent_start", {});
-
-    // Out-of-scope edit under initial scope ["src"] pauses with scope_violation.
-    fs.writeFileSync(path.join(repo, "test", "unit", "new.test.ts"), "export const ok = 1;\n");
-    const pausedTurn = emit("turn_end", mutatingTurn);
-    const firstPause = await paused();
-    assert.equal(firstPause.kind, "scope_violation");
-
-    // While paused, amend contract to allow test/**/*.test.ts and update requiredPrimitives, then steer.
-    recordContractAmendment(
-      base,
-      launch.id,
-      prepareContractAmendment(
-        launch.contract,
-        {
-          scope: ["src/**", "test/**/*.test.ts"],
-          requiredPrimitives: ["path.posix.matchesGlob"],
+      const sentinel = new OverseerSentinel({
+        base,
+        activeLaunch: () => launch,
+        activeRunBaseline: () => new Set<string>(),
+        isStopping: () => stopping,
+        queueCorrections: () => {
+          throw new Error("no corrections expected");
         },
-        repo,
-      ),
-    );
-    steer();
-    await pausedTurn;
-
-    // On resume and settle, sentinel uses the amended scope (no violation) and passes the amended contract to the judge.
-    assert.deepEqual(await emit("agent_before_settle", settle), [undefined]);
-    assert.equal(fs.existsSync(escPath), false);
-    assert.equal(judgedContracts.length, 1);
-    assert.deepEqual(judgedContracts[0], {
-      scope: ["src/**", "test/**/*.test.ts"],
-      verification: ["npm test"],
-      baseBranch: "main",
-      requiredPrimitives: ["path.posix.matchesGlob"],
-    });
-
-    // Amending baseBranch from an unresolvable typo to "main" clears branch_violation without false main-mutation errors.
-    recordContractAmendment(
-      base,
-      launch.id,
-      prepareContractAmendment(
-        {
-          scope: ["src/**", "test/**/*.test.ts"],
-          verification: ["npm test"],
-          baseBranch: "main",
-          requiredPrimitives: ["path.posix.matchesGlob"],
+      });
+      const native = await createNativeSessionFixture({
+        cwd: repo,
+        agentDir: base,
+        configure: (pi) => {
+          sentinel.attach(pi);
         },
-        { baseBranch: "nonexistent-branch" },
-        repo,
-      ),
-    );
-    fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "export const amended = 1;\n");
-    const badBranchTurn = emit("turn_end", mutatingTurn);
-    const branchPause = await paused();
-    assert.equal(branchPause.kind, "branch_violation");
-    assert.equal(branchPause.since, "launch");
+      });
+      t.after(async () => {
+        await native.dispose();
+      });
 
-    recordContractAmendment(
-      base,
-      launch.id,
-      prepareContractAmendment(
-        {
-          scope: ["src/**", "test/**/*.test.ts"],
-          verification: ["npm test"],
-          baseBranch: "nonexistent-branch",
-          requiredPrimitives: ["path.posix.matchesGlob"],
+      const beforeSettle = native.extensions[0]?.handlers.get("agent_before_settle")?.[0];
+      assert.ok(beforeSettle !== undefined);
+
+      // Edit file and prune the unreferenced baseline tree object written at session_start.
+      fs.writeFileSync(path.join(repo, "src", "app.ts"), "export const a = 42;\n");
+      execFileSync("git", ["prune", "--expire=now"], { cwd: repo });
+
+      const settlePromise = Promise.resolve(beforeSettle(settleEvent, native.context));
+      const escFile = path.join(runDirectory(base, launch.id), "escalation.json");
+      const esc = await waitForEscalation(escFile);
+      assert.equal(esc.kind, "final_diff");
+      assert.deepEqual(esc.changedFiles, [UNREADABLE_DIFF_MARKER]);
+      assert.match(esc.summary, /diff is unavailable/u);
+
+      resolveActiveEscalation(base, launch, "approved");
+      assert.equal(await settlePromise, undefined);
+      // After approval advances lastSeen to the fresh readable tree, an unchanged settle does not pause again.
+      assert.equal(await beforeSettle(settleEvent, native.context), undefined);
+    },
+  );
+
+  nodeIt(
+    "recovers after a transient unreadable captureSnapshot without poisoning lastSeen",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-transient-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      const launch = makeLaunch(base, repo, { overseer: { enabled: true, judge: "off" } });
+      let stopping = false;
+      t.after(() => {
+        stopping = true;
+      });
+      const sentinel = new OverseerSentinel({
+        base,
+        activeLaunch: () => launch,
+        activeRunBaseline: () => new Set<string>(),
+        isStopping: () => stopping,
+        queueCorrections: () => {
+          throw new Error("no corrections expected");
         },
-        { baseBranch: "main" },
-        repo,
-      ),
-    );
-    steer();
-    await badBranchTurn;
+      });
+      const native = await createNativeSessionFixture({
+        cwd: repo,
+        agentDir: base,
+        configure: (pi) => {
+          sentinel.attach(pi);
+        },
+      });
+      t.after(async () => {
+        await native.dispose();
+      });
 
-    // Resuming with repaired baseBranch passes cleanly.
-    assert.deepEqual(await emit("agent_before_settle", settle), [undefined]);
-    assert.equal(fs.existsSync(escPath), false);
-  },
-);
+      const beforeSettle = native.extensions[0]?.handlers.get("agent_before_settle")?.[0];
+      assert.ok(beforeSettle !== undefined);
 
-nodeTest(
-  "disabling the judge mid-run aborts in-flight judge calls and releases judge pauses while keeping deterministic tripwires active",
-  async (t) => {
-    let hangJudge = false;
-    let releaseHang: (() => void) | undefined;
-    let signalStarted!: (signal: AbortSignal | undefined) => void;
-    const firstSignal = new Promise<AbortSignal | undefined>((resolve) => {
-      signalStarted = resolve;
-    });
-    const { repo, base, launch, emit, paused, judged, escPath, steer } = await supervisedRun(t, {
-      verdict: () => "primitive_violation",
-      onClassify: async (signal) => {
-        if (!hangJudge) {
-          return;
+      // Force a single transient write-tree failure via GIT_OBJECT_DIRECTORY pointing at a file.
+      const blocker = path.join(base, "not-a-dir");
+      fs.writeFileSync(blocker, "block");
+      const prevObjDir = process.env.GIT_OBJECT_DIRECTORY;
+      process.env.GIT_OBJECT_DIRECTORY = blocker;
+      t.after(() => {
+        if (prevObjDir === undefined) {
+          delete process.env.GIT_OBJECT_DIRECTORY;
+        } else {
+          process.env.GIT_OBJECT_DIRECTORY = prevObjDir;
         }
-        signalStarted(signal);
-        await new Promise<void>((resolve) => {
-          releaseHang = resolve;
-          signal?.addEventListener(
-            "abort",
-            () => {
-              resolve();
-            },
-            { once: true },
-          );
-        });
-      },
-    });
-    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
-    await emit("before_agent_start", {});
-
-    // 1. Disabling the judge while a judge call is in flight aborts it without recording judge-unavailable or pausing.
-    hangJudge = true;
-    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), manyLines("inflight"));
-    const inFlightTurn = emit("turn_end", mutatingTurn);
-    const seenSignal = await firstSignal;
-    assert.ok(seenSignal !== undefined);
-    writeLiveOverseer(base, { enabled: true, judge: "off" });
-    await inFlightTurn;
-    releaseHang?.();
-    assert.equal(seenSignal.aborted, true);
-    assert.equal(fs.existsSync(escPath), false);
-    assert.equal(
-      fs.existsSync(path.join(runDirectory(base, launch.id), "judge-unavailable.json")),
-      false,
-    );
-
-    // 2. While judge is off, deterministic scope violations still pause and are NOT released by judge=off.
-    fs.writeFileSync(path.join(repo, "outside.txt"), "outside scope while judge is off\n");
-    const scopeTurn = emit("turn_end", mutatingTurn);
-    const scopePause = await paused();
-    assert.equal(scopePause.kind, "scope_violation");
-    assert.equal(scopePause.classifierReview, undefined);
-    writeLiveOverseer(base, { enabled: true, judge: "off" });
-    await delay(80);
-    assert.equal(fs.existsSync(escPath), true);
-    fs.unlinkSync(path.join(repo, "outside.txt"));
-    steer();
-    await scopeTurn;
-
-    // 3. Re-enabling judge pauses on a judge finding; toggling judge=off releases that pause without marking changes approved.
-    hangJudge = false;
-    writeLiveOverseer(base, { enabled: true, judge: "auto" });
-    const judgedBefore = judged.length;
-    const judgeTurn = emit("agent_before_settle", settle);
-    const judgePause = await paused();
-    assert.equal(judgePause.kind, "primitive_violation");
-    assert.ok(judgePause.classifierReview !== undefined);
-    assert.equal(judged.length, judgedBefore + 1);
-
-    writeLiveOverseer(base, { enabled: true, judge: "off" });
-    await judgeTurn;
-    assert.equal(fs.existsSync(escPath), false);
-
-    // Re-enabling judge still sees those unapproved changes (since="launch", not "last_approval").
-    writeLiveOverseer(base, { enabled: true, judge: "auto" });
-    const secondJudge = emit("agent_before_settle", settle);
-    const secondPause = await paused();
-    assert.equal(secondPause.since, "launch");
-    writeLiveOverseer(base, { enabled: false, judge: "auto" });
-    await secondJudge;
-    assert.equal(fs.existsSync(escPath), false);
-  },
-);
-
-nodeTest(
-  "toggling overseer off and on mid-run immediately releases pauses, stops checks, and supervises existing contracted children on re-enable",
-  async (t) => {
-    const { repo, base, launch, emit, paused, judged, escPath } = await supervisedRun(t, {
-      verdict: () => "compliant",
-      overseer: null,
-    });
-    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
-    writeLiveOverseer(base, { enabled: false, judge: "auto" });
-    await emit("before_agent_start", {});
-
-    // With overseer off, out-of-scope edits neither pause nor invoke the judge.
-    fs.writeFileSync(path.join(repo, "README.md"), "edited while overseer off\n");
-    await emit("turn_end", mutatingTurn);
-    assert.equal(fs.existsSync(escPath), false);
-    assert.equal(judged.length, 0);
-
-    // Turning overseer on mid-run supervises the already-running contracted child using its launch baseline.
-    writeLiveOverseer(base, { enabled: true, judge: "auto" });
-    const pausedTurn = emit("turn_end", mutatingTurn);
-    const scopePause = await paused();
-    assert.equal(scopePause.kind, "scope_violation");
-    assert.deepEqual(scopePause.changedFiles, ["README.md"]);
-
-    // Turning overseer off releases the deterministic pause cleanly and suppresses review requirements.
-    writeLiveOverseer(base, { enabled: false, judge: "auto" });
-    await pausedTurn;
-    assert.equal(fs.existsSync(escPath), false);
-    assert.deepEqual(await emit("agent_before_settle", settle), [undefined]);
-    assert.equal(
-      needsOverseerReview(base, launch, {
-        id: launch.id,
-        owner: launch.owner,
-        status: "completed",
-        endedAt: Date.now(),
-        changedFiles: ["src/allowed.ts"],
-      }),
-      false,
-    );
-    writeLiveOverseer(base, { enabled: true, judge: "auto" });
-    assert.equal(
-      needsOverseerReview(base, launch, {
-        id: launch.id,
-        owner: launch.owner,
-        status: "completed",
-        endedAt: Date.now(),
-        changedFiles: ["src/allowed.ts"],
-      }),
-      true,
-    );
-  },
-);
-
-nodeTest(
-  "sentinel records judge checkpoints in the run directory for direct, fallback, escalation, and unavailable outcomes",
-  async (t) => {
-    const google = makeClassifierModel("google", "gemini-decision-1", 0.03);
-    const gatewayLuna = makeClassifierModel("cloudflare-ai-gateway", "gpt-6-luna", 0.25);
-    let replies: Record<string, JudgeResponse> = {
-      "google/gemini-decision-1": "compliant",
-      "cloudflare-ai-gateway/gpt-6-luna": "compliant",
-    };
-    let available = true;
-    let runSignal: AbortSignal | undefined;
-    const { repo, base, launch, emit, paused, steer } = await supervisedRun(t, {
-      classifiers: [gatewayLuna, google],
-      verdict: (_diff, classifier) => replies[classifier] ?? "compliant",
-      available: () => available,
-      signal: () => runSignal,
-    });
-    const checkpointsFile = path.join(runDirectory(base, launch.id), "judge-checkpoints.json");
-    const unavailableFile = path.join(runDirectory(base, launch.id), "judge-unavailable.json");
-    const readRecordedCheckpoints = (): JudgeCheckpoint[] => {
-      const saved = read(checkpointsFile, judgeCheckpointsSchema);
-      assert.ok(saved !== undefined, "judge-checkpoints.json should exist");
-      assert.equal(saved.version, 1);
-      assert.deepEqual(readJudgeCheckpoints(base, launch.id), saved.checkpoints);
-      return saved.checkpoints;
-    };
-    const stripAt = (entries: readonly JudgeCheckpoint[]) =>
-      entries.map(({ at, ...rest }) => {
-        assert.equal(typeof at, "number");
-        return rest;
       });
-    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
-    await emit("before_agent_start", {});
 
-    // 1. Direct compliant verdict records the answering classifier with no failed candidates.
-    fs.writeFileSync(path.join(repo, "src", "direct.ts"), manyLines("direct"));
-    await emit("turn_end", mutatingTurn);
-    assert.equal(fs.existsSync(unavailableFile), false);
-    assert.deepEqual(stripAt(readRecordedCheckpoints()), [
-      {
-        judge: "auto",
-        outcome: "compliant",
-        classifier: "google/gemini-decision-1",
-      },
-    ]);
+      fs.writeFileSync(path.join(repo, "src", "app.ts"), "export const a = 99;\n");
+      const settlePromise = Promise.resolve(beforeSettle(settleEvent, native.context));
+      const escFile = path.join(runDirectory(base, launch.id), "escalation.json");
+      const esc = await waitForEscalation(escFile);
+      assert.equal(esc.kind, "final_diff");
+      assert.deepEqual(esc.changedFiles, [UNREADABLE_DIFF_MARKER]);
 
-    // 2. Fallback compliant verdict (Google 429 -> Luna compliant) records both the answering
-    // classifier and the failed candidate with its concise reason, without writing judge-unavailable.
-    replies = {
-      "google/gemini-decision-1": { error: "Google Decisions error (429): spending cap reached" },
-      "cloudflare-ai-gateway/gpt-6-luna": "compliant",
-    };
-    fs.writeFileSync(path.join(repo, "src", "fallback.ts"), manyLines("fallback"));
-    await emit("turn_end", mutatingTurn);
-    assert.equal(fs.existsSync(unavailableFile), false);
-    assert.deepEqual(stripAt(readRecordedCheckpoints()).slice(1), [
-      {
-        judge: "auto",
-        outcome: "compliant",
-        classifier: "cloudflare-ai-gateway/gpt-6-luna",
-        failed: [
-          {
-            classifier: "google/gemini-decision-1",
-            reason: "Google Decisions error (429): spending cap reached",
-          },
-        ],
-      },
-    ]);
+      // Restore git before parent approves; applyAnswer re-captures a readable watermark.
+      if (prevObjDir === undefined) {
+        delete process.env.GIT_OBJECT_DIRECTORY;
+      } else {
+        process.env.GIT_OBJECT_DIRECTORY = prevObjDir;
+      }
+      resolveActiveEscalation(base, launch, "approved");
+      assert.equal(await settlePromise, undefined);
+      assert.equal(await beforeSettle(settleEvent, native.context), undefined);
+    },
+  );
 
-    // 3. Subsequent checkpoint in the same run asks Luna first (Google already failed) and records
-    // the direct Luna verdict with no failed attempts.
-    fs.writeFileSync(path.join(repo, "src", "luna-next.ts"), manyLines("lunaNext"));
-    await emit("turn_end", mutatingTurn);
-    assert.deepEqual(stripAt(readRecordedCheckpoints()).slice(2), [
-      {
-        judge: "auto",
-        outcome: "compliant",
-        classifier: "cloudflare-ai-gateway/gpt-6-luna",
-      },
-    ]);
+  nodeIt(
+    "normalizes legacy pre-V2 escalation payloads without suppressing structural pauses when judge is off",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-legacy-esc-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      const launch = makeLaunch(base, repo, { overseer: { enabled: true, judge: "off" } });
+      const dir = runDirectory(base, launch.id);
+      fs.writeFileSync(path.join(dir, "launch.json"), JSON.stringify(launch));
+      const file = path.join(dir, "escalation.json");
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          id: "esc-legacy-1",
+          runId: launch.id,
+          owner: launch.owner,
+          at: 123,
+          strikes: 2,
+          kind: "scope_violation",
+          summary: "Edited README.md outside scope",
+          changedFiles: ["README.md"],
+          diffExcerpt: "+change",
+          diffDigest: "abc123",
+          since: "approval",
+        }),
+      );
+      const parsed = readEscalation(file);
+      assert.ok(parsed !== undefined);
+      assert.equal(parsed.pauseNumber, 2);
+      assert.equal(parsed.kind, "final_diff");
+      assert.equal(parsed.since, "checkpoint");
+      assert.deepEqual(parsed.changedFiles, ["README.md"]);
 
-    // 4. Escalation verdict after a silent candidate records the answering classifier, outcome,
-    // and the failed silent attempt.
-    replies = {
-      "cloudflare-ai-gateway/gpt-6-luna": { noVerdict: true },
-      "google/gemini-decision-1": "primitive_violation",
-    };
-    fs.writeFileSync(path.join(repo, "src", "flagged.ts"), manyLines("flagged"));
-    const flaggedTurn = emit("turn_end", mutatingTurn);
-    assert.equal((await paused()).kind, "primitive_violation");
-    steer();
-    await flaggedTurn;
-    assert.deepEqual(stripAt(readRecordedCheckpoints()).slice(3), [
-      {
-        judge: "auto",
-        outcome: "primitive_violation",
-        classifier: "google/gemini-decision-1",
-        failed: [
-          {
-            classifier: "cloudflare-ai-gateway/gpt-6-luna",
-            reason: "the response has no verdict",
-          },
-        ],
-      },
-    ]);
-
-    // 5. Cancelled checkpoint is not recorded.
-    fs.writeFileSync(path.join(repo, "src", "cancelled.ts"), manyLines("cancelled"));
-    runSignal = AbortSignal.abort();
-    await emit("turn_end", mutatingTurn);
-    runSignal = undefined;
-    assert.equal(readRecordedCheckpoints().length, 4);
-
-    // 6. Unavailable checkpoint when every candidate fails records all failed candidates.
-    replies = {
-      "google/gemini-decision-1": { error: "credits depleted" },
-      "cloudflare-ai-gateway/gpt-6-luna": { error: "upstream timeout" },
-    };
-    await emit("agent_before_settle", settle);
-    assert.equal(fs.existsSync(unavailableFile), true);
-    assert.deepEqual(stripAt(readRecordedCheckpoints()).slice(4), [
-      {
-        judge: "auto",
-        outcome: "unavailable",
-        failed: [
-          { classifier: "google/gemini-decision-1", reason: "credits depleted" },
-          { classifier: "cloudflare-ai-gateway/gpt-6-luna", reason: "upstream timeout" },
-        ],
-      },
-    ]);
-
-    // 7. Unavailable checkpoint when no classifier is available records the error reason.
-    available = false;
-    fs.appendFileSync(path.join(repo, "src", "cancelled.ts"), "export const extra = 1;\n");
-    await emit("agent_before_settle", settle);
-    assert.deepEqual(stripAt(readRecordedCheckpoints()).slice(5), [
-      {
-        judge: "auto",
-        outcome: "unavailable",
-        error: "No classifier model is available for the overseer judge.",
-      },
-    ]);
-
-    // 8. agent_runs inspect surfaces the recorded checkpoints concisely.
-    const inspection = renderInspection(base, launch);
-    const inspectText = inspection.content[0]?.text ?? "";
-    assert.match(inspectText, /Judge checkpoints \(6\):/u);
-    assert.match(
-      inspectText,
-      /compliant via cloudflare-ai-gateway\/gpt-6-luna \(failed: google\/gemini-decision-1: Google Decisions error \(429\): spending cap reached\)/u,
-    );
-    assert.match(
-      inspectText,
-      /unavailable \(No classifier model is available for the overseer judge\.\)/u,
-    );
-    assert.ok(
-      typeof inspection.details === "object" &&
-        inspection.details !== null &&
-        "judgeCheckpoints" in inspection.details,
-    );
-    assert.deepEqual(inspection.details.judgeCheckpoints, readRecordedCheckpoints());
-  },
-);
+      const native = await createNativeSessionFixture({ cwd: repo, agentDir: base });
+      t.after(async () => {
+        await native.dispose();
+      });
+      const rec = notifications(native.context, base, launch.owner);
+      assert.equal(rec.notices.length, 1);
+      assert.equal(rec.notices[0]?.message.customType, "agent-escalation");
+    },
+  );
+});

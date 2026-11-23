@@ -40,7 +40,7 @@ import { legacyInputDirectories, reconcileLegacy } from "./legacy.ts";
 import { pathStamp } from "./wake.ts";
 import { CompletionWatches } from "./completion-watches.ts";
 import { savedContinuation } from "./saved.ts";
-import { continuationDecision, readRunState } from "./run-state.ts";
+import { continuationDecision, readRunState, runEscalation } from "./run-state.ts";
 import { registerSubagentBackgroundWork } from "./background-work.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
@@ -49,32 +49,17 @@ import { BackgroundReporter } from "../shared/background-reporting.ts";
 import { CompletionSchedule } from "./completion-schedule.ts";
 import { notifyInventory } from "./inventory-events.ts";
 import { OverseerController } from "./overseer.ts";
-import {
-  applyLiveContractAmendment,
-  assertUnadmittedContract,
-  prepareContinuationContract,
-  serveChildContractAmendments,
-  successorContractOptions,
-} from "./overseer-contract.ts";
-import {
-  assertRunActionOptionsAllowed,
-  prepareOverseerReviewAction,
-  registerOverseerSettleGate,
-  validateReviewInput,
-} from "./overseer-review.ts";
+import { resolveActiveEscalation } from "./overseer-pause.ts";
 
 class AgentRuntime {
   private attachment: AttachmentState = { kind: "detached" };
   private readonly reporter = new BackgroundReporter(() => this.ctx);
-  // Change hints for the owner directory, legacy results and every awaited canonical file.
   private readonly watches: CompletionWatches;
-  // Polling remains only while change hints are unavailable or a reconciliation failed.
   private readonly schedule = new CompletionSchedule(
     () => this.scan(),
     () => this.recover(),
   );
   private awaited: ReadonlySet<string> = new Set();
-  // Input stamps the last reconciliation saw; a one-second probe recovers dropped hints.
   private observed = new Map<string, string>();
   private attachmentTail: Promise<void> = Promise.resolve();
   private readonly shutdown = new AbortController();
@@ -102,7 +87,6 @@ class AgentRuntime {
       ? this.attachment.binding.context
       : undefined;
   }
-  /** The process is shutting down; attachment cleanup and new work are closed. */
   private get stopping(): boolean {
     return this.shutdown.signal.aborted;
   }
@@ -126,7 +110,6 @@ class AgentRuntime {
     this.checkMain();
     return { base: this.base, owner: this.owner };
   }
-  /** Rechecked after every await: an external abort() is invisible to narrowing. */
   private refuseIfAborted(signal: AbortSignal | undefined, message: string): void {
     if (signal?.aborted === true) {
       throw new Error(message);
@@ -166,13 +149,11 @@ class AgentRuntime {
         `Agent completion reconciliation: ${errorText(error)}`,
       );
     }
-    // Newly awaited files were absent when read, or are rechecked once by the probe.
     this.observed = new Map(inputs().map((file) => [file, before.get(file) ?? ""]));
     const next = this.watches.update(this.base, legacyInputDirectories(), this.awaited);
     if (!reconciled || next === "poll") {
       this.schedule.pollIn(200);
     } else if (next === "rescan") {
-      // Publications before arming had no hint; reconcile once more after it.
       this.wake();
     }
   };
@@ -198,9 +179,6 @@ class AgentRuntime {
     ) {
       return this.queueAttachment(binding);
     }
-    // Attach and publish only after the launcher retires rollback: an unready replacement
-    // must neither adopt children nor append completions to a journal it may abandon.
-    // Readiness follows session_start, so never await it here.
     const waiting: AttachmentState = { kind: "waiting", binding };
     this.attachment = waiting;
     host.ready
@@ -238,7 +216,6 @@ class AgentRuntime {
       }
       this.attachment = { ...attaching, kind: "attached" };
       this.overseer.publishLive(binding.base);
-      // Recovery and watch setup stay off the awaited startup path.
       this.schedule.pollIn(200);
       this.schedule.probeIn(1000);
     } catch (error) {
@@ -295,7 +272,6 @@ class AgentRuntime {
     });
     this.checkMain();
     enqueue(this.base, launch, { action: "run" });
-    // Cancellation after publication owns only the start; the queued run stays recoverable.
     this.refuseIfAborted(signal, "Delegation cancelled after preparation; no run was started.");
     await ensureActor(this.base, launch, this.shutdown.signal);
     return renderReceipt(this.base, launch, this.ctx, {
@@ -304,7 +280,6 @@ class AgentRuntime {
     });
   }
   private async retryContinuation(launch: Launch, input: RunsInput) {
-    assertUnadmittedContract(launch.id, input.contract);
     const claim = inspectActorClaim(this.base, launch);
     const command = read(
       path.join(conversation(this.base, launch), "commands", `${launch.id}.json`),
@@ -321,7 +296,6 @@ class AgentRuntime {
         `Run ${launch.id} is awaiting native admission. Retry requires the exact saved prompt, its existing queued Run command, and no live actor. Missing commands or ambiguous process claims require inspection. Admission or a canonical result arrives without polling: end the turn or do other work until the completion notification, then inspect once before sending another prompt. No new continuation was launched.`,
       );
     }
-    // Only an unadmitted durable command is retryable; keep all process/shell claim guards.
     await ensureActor(this.base, launch, this.shutdown.signal);
     return renderReceipt(this.base, launch, this.ctx, { receipt: "continuation" });
   }
@@ -330,42 +304,78 @@ class AgentRuntime {
       ? { enabled: true as const, judge: this.overseer.current.judge }
       : undefined;
   }
-  private async continue(launch: Launch, input: RunsInput) {
-    if (input.prompt === undefined) {
-      throw new Error("continue requires the entire new prompt.");
+  private continuePausedCheckpoint(launch: Launch, prompt: string | undefined) {
+    const trimmed = prompt?.trim();
+    const steer =
+      trimmed !== undefined && trimmed.length > 0
+        ? { id: randomUUID(), prompt: trimmed }
+        : undefined;
+    const released = resolveActiveEscalation(this.base, launch, "approved", steer);
+    if (released === undefined) {
+      return;
     }
+    if (steer !== undefined) {
+      enqueue(this.base, launch, { action: "steer", prompt: steer.prompt, id: steer.id });
+    }
+    notifyInventory(this.base, launch.id);
+    if (steer !== undefined) {
+      return renderReceipt(this.base, launch, this.ctx, {
+        receipt: "guidance",
+        command: steer.id,
+        note: "Checkpoint released with steering correction queued (queue acceptance is not actual completion or model consumption).",
+      });
+    }
+    return renderReceipt(this.base, launch, this.ctx, {
+      receipt: "checkpoint-approved",
+      note: "Checkpoint approved; child released to continue.",
+    });
+  }
+  private continueLiveGuidance(launch: Launch, prompt: string | undefined) {
+    if (runEscalation(this.base, launch, "running") !== undefined) {
+      const receipt = this.continuePausedCheckpoint(launch, prompt);
+      if (receipt !== undefined) {
+        return receipt;
+      }
+    }
+    if (prompt === undefined) {
+      throw new Error(
+        "continue requires the entire new prompt (only paused checkpoints may omit prompt).",
+      );
+    }
+    const command = enqueue(this.base, launch, { action: "steer", prompt });
+    return renderReceipt(this.base, launch, this.ctx, {
+      receipt: "guidance",
+      command,
+      note: "Guidance queued, not actual completion or model consumption.",
+    });
+  }
+  private async continue(launch: Launch, input: RunsInput) {
     if (!fs.existsSync(launch.sessionFile)) {
       throw new Error("Missing saved native session; no process was launched.");
     }
     const state = readRunState(this.base, launch);
     if (state.kind === "saved-unadmitted") {
+      if (input.prompt === undefined) {
+        throw new Error("continue requires the entire new prompt.");
+      }
       return this.retryContinuation(launch, input);
     }
-    const { existing, amendment } = prepareContinuationContract(this.base, launch, input.contract);
     const claim = state.kind === "admitted" ? inspectActorClaim(this.base, launch) : undefined;
     if (continuationDecision(state, possiblyLive(claim)) === "guidance") {
-      const command = enqueue(this.base, launch, {
-        action: "steer",
-        prompt: applyLiveContractAmendment(this.base, launch, input.prompt, amendment),
-      });
-      return renderReceipt(this.base, launch, this.ctx, {
-        receipt: "guidance",
-        command,
-        note: "Guidance queued, not actual completion or model consumption.",
-      });
+      return this.continueLiveGuidance(launch, input.prompt);
+    }
+    if (input.prompt === undefined) {
+      throw new Error("continue requires the entire new prompt.");
     }
     parkFailure(this.base, launch);
-    const options = {
-      ...successorContractOptions(this.base, launch, existing, amendment),
+    const next = successor(this.base, launch, input.prompt, {
       overseer: this.activeOverseerLaunch() ?? null,
-    };
-    const next = successor(this.base, launch, input.prompt, options);
+    });
     if (!next) {
       return renderReceipt(this.base, latest(this.base, launch), this.ctx, {
         receipt: "existing-successor",
       });
     }
-    // Retain successor claims on ambiguous after-launch failures: no replay.
     enqueue(this.base, next, { action: "run" });
     await ensureActor(this.base, next, this.shutdown.signal);
     return renderReceipt(this.base, next, this.ctx, { receipt: "continuation" });
@@ -377,14 +387,12 @@ class AgentRuntime {
     const { launch, kind } = savedContinuation({
       id: input.id,
       prompt: input.prompt,
-      contract: input.contract,
       overseer: this.activeOverseerLaunch(),
       context,
       base: this.base,
       agentDir: this.agentDir,
     });
     if (kind === "created") {
-      // The durable adoption claim survives ambiguous after-launch failures.
       enqueue(this.base, launch, { action: "run" });
       await ensureActor(this.base, launch, this.shutdown.signal);
     }
@@ -394,7 +402,6 @@ class AgentRuntime {
   }
   private async runs(input: RunsInput, context: ExtensionContext) {
     await this.attachedOwner();
-    assertRunActionOptionsAllowed(input);
     if (input.action === "list") {
       const all = list(this.base).map((id) => launchAt(this.base, id, this.owner));
       return renderInventory(this.base, all, this.ctx, input);
@@ -413,61 +420,33 @@ class AgentRuntime {
     if (input.action === "inspect") {
       return renderInspection(this.base, original, this.ctx, input);
     }
-    if (input.action === "review") {
-      return this.review(original, input);
-    }
     const launch = latest(this.base, original);
     if (input.action === "stop") {
       return this.stop(launch);
     }
     return this.continue(launch, input);
   }
-  private async review(original: Launch, input: RunsInput) {
-    validateReviewInput(this.base, original, input);
-    const { target, review, released, command } = prepareOverseerReviewAction(
-      this.base,
-      original,
-      input,
-    );
-    if (review.verdict === "changes_requested") {
-      return this.continue(latest(this.base, target), { ...input, prompt: review.summary });
-    }
-    return renderReceipt(this.base, target, this.ctx, {
-      receipt: "review",
-      review,
-      released,
-      ...(command !== undefined ? { command } : {}),
-    });
-  }
   register(): void {
     registerCompactMessages(this.pi, [
       "agent-completion",
       "agent-escalation",
-      "overseer-review-gate",
+      "overseer-note",
       "subagent-notify",
     ]);
     if (!this.child) {
       this.overseer.register();
-      registerOverseerSettleGate(this.pi, () =>
-        this.attachment.kind === "attached"
-          ? { enabled: this.overseer.current.enabled, base: this.base, owner: this.owner }
-          : undefined,
-      );
     }
     serveParked(
       this.pi,
       () => (this.child || !this.ctx ? undefined : { base: this.base, owner: this.owner }),
       this.shutdown.signal,
     );
-    serveChildContractAmendments(this.pi, () => this.attachedOwner());
     this.pi.on("session_start", (_event, context) => this.start(context));
     this.pi.on("turn_end", (event, context) => {
-      // The public pending flag covers user input; the preview also includes custom messages.
       if (
         this.attachment.kind === "attached" &&
         settle(this.owner, context.hasPendingMessages() || event.context.pendingMessages.length > 0)
       ) {
-        // Released admissions may have been dropped from the queue rather than published.
         this.wake();
       }
     });
@@ -514,7 +493,6 @@ class AgentRuntime {
   }
 }
 export default function agents(pi: ExtensionAPI): void {
-  // Delegation, /agents and parked history then avoid importing a second SDK graph.
   rememberSDK(loadedSDK);
   new AgentRuntime(pi).register();
 }

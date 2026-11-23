@@ -747,6 +747,7 @@ const RunResultDetailsSchema = Type.Object({
   ),
   context: Type.Optional(Type.Unknown()),
   guidance: Type.Optional(Type.Array(Type.Object({ state: Type.Optional(Type.String()) }))),
+  readOnly: Type.Optional(Type.Boolean()),
   waiting: Type.Optional(
     Type.Object({
       since: Type.Number(),
@@ -4320,66 +4321,34 @@ try {
         assert.deepEqual(fs.readFileSync(path.join(runDir(orphan.id), name)), originalBytes[index]),
       );
     }
-  } else if (phase === "delegate-contract-scope") {
+  } else if (phase === "delegate-read-only") {
     const target = path.join(cwd, "scope-target");
-    const outside = path.join(root, "outside");
     fs.mkdirSync(path.join(target, "src"), { recursive: true });
     fs.writeFileSync(path.join(target, "src", "existing.ts"), "");
-    fs.mkdirSync(path.join(cwd, "wrong-repo", "src"), { recursive: true });
-    fs.mkdirSync(outside);
-    fs.symlinkSync(outside, path.join(target, "src", "escape"));
     const model = "single-agent-fixture/literal-model";
-    const verification = ["check file changes"];
 
-    for (const { name, contract } of [
-      {
-        name: "specific-scope",
-        contract: {
-          scope: ["src/", "src/existing.ts", "src/new.ts", "src/new-dir/new.ts", "NOTES.md"],
-          verification,
-        },
-      },
-      { name: "read-only", contract: { scope: [] } },
-      { name: "wildcard", contract: { scope: ["*"], verification } },
+    for (const { name, readOnly } of [
+      { name: "editable-run", readOnly: undefined },
+      { name: "read-only-run", readOnly: true },
     ]) {
       const receipt = await call(
         "delegate",
-        { prompt: name, cwd: "scope-target", model, contract },
+        {
+          prompt: name,
+          cwd: "scope-target",
+          model,
+          ...(readOnly === true ? { readOnly: true } : {}),
+        },
         name,
       );
       assert.equal(receipt.isError, false, contentText(receipt));
       const result = runDetails(await settled(receipt));
       assert.equal(result.output?.text, `CHILD_LITERAL_RESULT:${name}`);
       assert.equal(fs.realpathSync(result.cwd ?? ""), fs.realpathSync(target));
+      assert.equal(result.readOnly, readOnly);
     }
 
-    const base = path.dirname(runDir("unused"));
-    const before = fs.readdirSync(base).sort();
-    const starts = nativeStarts();
-    assert.equal(starts.length, 3, "all accepted scopes reached native actor start");
-    for (const { entry, reason } of [
-      { entry: "wrong-repo/src/a.ts", reason: /directory "wrong-repo"/ },
-      { entry: "packages/api/x.ts", reason: /directory "packages"/ },
-      { entry: "src/escape/new.ts", reason: /does not resolve inside/ },
-    ]) {
-      const refusal = await call(
-        "delegate",
-        {
-          prompt: entry,
-          cwd: "scope-target",
-          model,
-          contract: { scope: ["src", entry], verification },
-        },
-        entry,
-      );
-      const message = contentText(refusal);
-      assert.equal(refusal.isError, true, message);
-      assert.ok(message.includes(`"${target}"`), message);
-      assert.ok(message.includes(`"${entry}"`), message);
-      assert.match(message, reason);
-      assert.deepEqual(fs.readdirSync(base).sort(), before, "no run was prepared or queued");
-      assert.deepEqual(nativeStarts(), starts, "no additional native actor started");
-    }
+    assert.equal(nativeStarts().length, 2, "both runs reached native actor start");
   } else if (phase === "launch-pre-spawn") {
     const model = "single-agent-fixture/literal-model";
     const target = path.join(root, "launch-cwd");

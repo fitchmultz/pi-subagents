@@ -1,6 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "../agent/typebox.ts";
-import { runContractSchema } from "../shared/amendment-schema.ts";
 
 export const intercomSchema = Type.Object(
   {
@@ -46,7 +45,6 @@ export const intercomSchema = Type.Object(
       ),
     ),
     replyTo: Type.Optional(Type.String({ description: "Message ID to answer or thread" })),
-    contract: Type.Optional(runContractSchema),
     entryId: Type.Optional(Type.String()),
     offset: Type.Optional(Type.Integer({ minimum: 0, description: "UTF-16 characters" })),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 16384 })),

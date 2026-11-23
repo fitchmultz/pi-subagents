@@ -15,12 +15,6 @@ import { IntercomTools } from "./tools.ts";
 import { IntercomSessionEvents } from "./session-events.ts";
 import { registerIntercomTools } from "./tool-registration.ts";
 import { isParkRequest, PARK, PARKED_HISTORY, WAKE, type WakeResult } from "../shared/parking.ts";
-import {
-  AMEND_CHILD_CONTRACT,
-  type ChildContractAmendmentResult,
-  type ChildContractTarget,
-  type ContractAmendmentInput,
-} from "../shared/child-contract.ts";
 import type { NativeHistory } from "./last-message.ts";
 import { BackgroundReporter } from "../shared/background-reporting.ts";
 
@@ -48,25 +42,6 @@ function wakeParked(pi: ExtensionAPI, peer: string, signal?: AbortSignal): Promi
   return (
     result ??
     Promise.resolve({ status: "failed", reason: "No agent runtime owns this parked child." })
-  );
-}
-
-function amendChildContract(
-  pi: ExtensionAPI,
-  target: ChildContractTarget,
-  contract: ContractAmendmentInput,
-): Promise<ChildContractAmendmentResult> {
-  let result: Promise<ChildContractAmendmentResult> | undefined;
-  pi.events.emit(AMEND_CHILD_CONTRACT, {
-    target,
-    contract,
-    reply: (outcome: Promise<ChildContractAmendmentResult>) => {
-      result = outcome;
-    },
-  });
-  return (
-    result ??
-    Promise.reject(new Error("No agent runtime is available to amend a child delegation contract."))
   );
 }
 
@@ -183,7 +158,6 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
       replies,
       wait,
       devices,
-      amendChildContract: (target, contract) => amendChildContract(pi, target, contract),
     },
     config,
   );

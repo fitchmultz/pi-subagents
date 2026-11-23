@@ -170,9 +170,7 @@ nodeTest(
     assert.equal(tool.name, "intercom");
     const wireSchema = record(tool.inputSchema);
     const wireProps = record(wireSchema.properties);
-    const piKeys = Object.keys(intercomSchema.properties)
-      .filter((key) => key !== "contract")
-      .sort();
+    const piKeys = Object.keys(intercomSchema.properties).sort();
     assert.deepEqual(Object.keys(wireProps).sort(), piKeys);
     assert.deepEqual(wireSchema.required, intercomSchema.required);
     assert.equal(wireSchema.additionalProperties, false);

@@ -1,24 +1,25 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { completionReceipts, escalationReceipts } from "./receipts.ts";
+import { completionReceipts, escalationReceipts, noteReceipts } from "./receipts.ts";
 import { readOutputPage } from "../shared/output-page.ts";
 import { journalStamp } from "../shared/native-journal.ts";
 import {
   escalationResolutionSchema,
-  escalationSchema,
   type Escalation,
   type Launch,
+  type OverseerNote,
   type Result,
 } from "./contracts.ts";
-import { isReviewableResult } from "./overseer-review.ts";
 import { activeOverseer } from "./overseer.ts";
 import {
-  escalationEvidenceLines,
-  escalationKindLabel,
-  escalationSteers,
+  checkpointEvidenceLines,
+  checkpointKindLabel,
+  formatFindingsLines,
+  judgeUnavailable,
 } from "./overseer-evidence.ts";
-import { judgeUnavailable } from "./overseer-judge.ts";
+import { readEscalation } from "./overseer-pause.ts";
+import { readOverseerNotes } from "./overseer-sentinel.ts";
 import { launchAt, list, read, runDirectory } from "./storage.ts";
 import { accountingState, readCanonicalResult, readResult } from "./usage.ts";
 
@@ -34,7 +35,6 @@ function queuedAdmissions(): Set<string> {
   const store = globalThis as Record<string, unknown>;
   const existing = store.__pi_single_agent_admissions__;
   if (isStringSet(existing)) {
-    // Keep one live queue identity across native extension reloads.
     return existing;
   }
   const queued = new Set<string>();
@@ -52,7 +52,6 @@ type DeliveryDecision =
   | { readonly kind: "published"; readonly where: "file" | "memory" }
   | { readonly kind: "held" | "deliverable" };
 
-/** Canonical result readers establish availability before deciding delivery. */
 function deliveryDecision(receipt: "file" | "memory" | undefined, held: boolean): DeliveryDecision {
   return receipt === undefined
     ? { kind: held ? "held" : "deliverable" }
@@ -66,7 +65,7 @@ export function completionDelivery(
 ): DeliveryDecision {
   return deliveryDecision(receipt, admissions.has(`${owner}/${id}`));
 }
-/** Returns whether any admission was released for reconciliation. */
+
 export function settle(owner: string, pending: boolean): boolean {
   if (pending) {
     return false;
@@ -80,50 +79,48 @@ export function settle(owner: string, pending: boolean): boolean {
   }
   return released;
 }
+
 export function published(ctx: ExtensionContext, launch: Launch): string | undefined {
   return completionReceipts(ctx.sessionManager, launch.owner).get(launch.id);
 }
+
 export interface Completion {
   readonly owner: string;
   readonly id: string;
+  /** When false, append the notice to context without waking an idle parent. */
+  readonly wake?: boolean | undefined;
   readonly message: Parameters<ExtensionAPI["sendMessage"]>[0];
 }
+
 export function deliver(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   notices: readonly Completion[],
 ): void {
   const idle = ctx.isIdle();
+  const lastWake = notices.findLastIndex((notice) => notice.wake !== false);
   for (const [index, notice] of notices.entries()) {
     hold(notice.owner, notice.id);
     try {
-      // Pi defers settlement-triggered runs separately. Publish the idle batch first,
-      // then trigger once so no unstarted wakeup can outlive its admission hold.
-      pi.sendMessage(notice.message, {
-        triggerTurn: !idle || index === notices.length - 1,
-        deliverAs: "steer",
-      });
+      const options =
+        notice.wake === false
+          ? { triggerTurn: false }
+          : { triggerTurn: !idle || index === lastWake, deliverAs: "steer" as const };
+      pi.sendMessage(notice.message, options);
     } catch (error) {
       release(notice.owner, notice.id);
       throw error;
     }
   }
 }
-function overseerReviewHint(base: string, launch: Launch, result: Result): string {
-  // A queued completion may arrive after review. Only the live settle gate asks for action.
-  return isReviewableResult(launch, result, base)
-    ? `\n[Check current review status with agent_runs(action="inspect", id="${launch.id}"). If review is still required, inspect the diff and choose approved or changes_requested.]`
-    : "";
-}
 
-/** Says once, with the run's result, that the run ended with work no judge answered for. */
 function judgeUnavailableHint(base: string, launch: Launch): string {
   const live = activeOverseer(base, launch);
   const unavailable =
     live.enabled && live.judge !== "off" ? judgeUnavailable(base, launch.id) : undefined;
   return unavailable === undefined
     ? ""
-    : `\n[Overseer judge unavailable: no classifier judged the last changes of this run against its contract. The scope, branch and error-loop checks ran. ${unavailable.summary}]`;
+    : `\n[Overseer skeptic unavailable: no model evaluated the last changes (${unavailable.summary}). Structural checkpoints still ran.]`;
 }
 
 function notification(base: string, launch: Launch, result: Result): Completion {
@@ -139,7 +136,7 @@ function notification(base: string, launch: Launch, result: Result): Completion 
     message: {
       customType: "agent-completion",
       display: true,
-      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(base, launch, result)}${judgeUnavailableHint(base, launch)}\nNative journal: ${launch.sessionFile}`,
+      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${judgeUnavailableHint(base, launch)}\nNative journal: ${launch.sessionFile}`,
       details: {
         owner: launch.owner,
         id: launch.id,
@@ -152,35 +149,24 @@ function notification(base: string, launch: Launch, result: Result): Completion 
   };
 }
 
-const named = (label: string, files: readonly string[] | undefined): string =>
-  files === undefined || files.length === 0 ? "" : `${label}: ${files.join(", ")}`;
-
-/** What changed, as far as the child's package version reports it. */
 function changeLines(escalation: Escalation): string[] {
   const files = escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)";
-  if (escalation.stat === undefined) {
-    return [`Changed files: ${files}`, escalation.diffExcerpt];
-  }
-  const stat = escalation.stat.replaceAll(/^(\S+)\t(\S+)\t/gmu, "  +$1 -$2 ");
+  const header = `Changes since ${escalation.since === "checkpoint" ? "last checkpoint" : "launch"}:`;
+  const stat =
+    escalation.stat === undefined
+      ? `  ${files}`
+      : escalation.stat.replaceAll(/^(\S+)\t(\S+)\t/gmu, "  +$1 -$2 ");
   return [
-    `Changes since ${escalation.since === "approval" ? "your last approval" : "launch"}:`,
-    stat === "" ? `  ${files}` : stat,
-    named("Changed since the last clean check, look here first", escalation.unchecked),
-    named(
-      // The work is named, not the path: the same file can have other changes that are shown.
-      "Work on these files is not in the diff (committed on a branch the child left, or dropped by a checkout)",
-      escalation.leftBehind,
-    ),
-    // A file can be here and in the lines above: it changed again after the approval.
-    named("Approved earlier in this run (those changes are not shown)", escalation.approved),
+    header,
+    stat,
     escalation.diffExcerpt.trimEnd(),
-    escalation.diffCommand === undefined ? "" : `[Diff cut. All of it: ${escalation.diffCommand}]`,
+    escalation.diffCommand === undefined ? "" : `[Diff cut. Full diff: ${escalation.diffCommand}]`,
   ];
 }
 
 function escalationNotice(launch: Launch, escalation: Escalation): Completion {
   const label = launch.name === undefined ? launch.id : `${launch.id} (${launch.name})`;
-  const steers = escalationSteers(escalation);
+  const steers = escalation.steers ?? 0;
   return {
     owner: launch.owner,
     id: `escalation:${escalation.id}`,
@@ -188,14 +174,11 @@ function escalationNotice(launch: Launch, escalation: Escalation): Completion {
       customType: "agent-escalation",
       display: true,
       content: [
-        `[Overseer escalation #${escalation.strikes} - ${escalationKindLabel(escalation)}] Run ${label} paused in ${launch.cwd}.`,
-        ...escalationEvidenceLines(escalation),
-        escalation.classifierReview === undefined
-          ? ""
-          : `${escalation.classifierReview.source === "guidance" ? "Latest task-owner guidance" : "Task prompt"} (for context, not a cited rule):\n${escalation.classifierReview.instruction}`,
+        `[Overseer checkpoint #${escalation.pauseNumber} - ${checkpointKindLabel(escalation)}] Run ${label} paused in ${launch.cwd}.`,
+        ...checkpointEvidenceLines(escalation),
         ...changeLines(escalation),
         steers === 0 ? "" : `Earlier pauses answered with steering: ${steers}.`,
-        'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.',
+        'Answer: `agent_runs` `action="continue"` (omit `prompt` to approve and continue, or pass `prompt` to steer with corrections) or `action="stop"`.',
       ]
         .filter((line) => line.length > 0)
         .join("\n"),
@@ -204,6 +187,29 @@ function escalationNotice(launch: Launch, escalation: Escalation): Completion {
         id: launch.id,
         escalationId: escalation.id,
         escalation,
+      },
+    },
+  };
+}
+
+function noteNotice(launch: Launch, note: OverseerNote): Completion {
+  const label = launch.name === undefined ? launch.id : `${launch.id} (${launch.name})`;
+  return {
+    owner: launch.owner,
+    id: `note:${note.id}`,
+    wake: false,
+    message: {
+      customType: "overseer-note",
+      display: true,
+      content: [
+        `[Overseer heads-up (non-blocking) - ${note.model}] Run ${label} is still running:`,
+        ...formatFindingsLines(note.findings),
+      ].join("\n"),
+      details: {
+        owner: launch.owner,
+        id: launch.id,
+        noteId: note.id,
+        note,
       },
     },
   };
@@ -223,18 +229,75 @@ function inspectRunEscalation(
   const dir = runDirectory(base, id);
   const escFile = path.join(dir, "escalation.json");
   awaited.add(escFile);
-  const escalation = read(escFile, escalationSchema);
+  const escalation = readEscalation(escFile);
   if (escalation === undefined) {
     return undefined;
   }
-  if (escalation.classifierReview !== undefined && live.judge === "off") {
+  if (escalation.kind === "skeptic" && live.judge === "off") {
     return undefined;
   }
   const resolution = read(path.join(dir, "escalation-resolution.json"), escalationResolutionSchema);
   return resolution?.escalationId === escalation.id ? undefined : { launch, escalation };
 }
 
-function pendingEscalations(
+function collectEscalationNotice(input: {
+  readonly found: { readonly launch: Launch; readonly escalation: Escalation };
+  readonly owner: string;
+  readonly where: "file" | "memory";
+  readonly seen: ReadonlySet<string>;
+}): Completion | undefined {
+  const { found, owner, where, seen } = input;
+  const key = `escalation:${found.escalation.id}`;
+  const state = completionDelivery(owner, key, seen.has(found.escalation.id) ? where : undefined);
+  if (state.kind === "published") {
+    release(owner, key);
+    return;
+  }
+  return state.kind === "deliverable"
+    ? escalationNotice(found.launch, found.escalation)
+    : undefined;
+}
+
+function collectNoteNotices(input: {
+  readonly launch: Launch;
+  readonly notes: readonly OverseerNote[];
+  readonly where: "file" | "memory";
+  readonly seen: ReadonlySet<string>;
+}): Completion[] {
+  const { launch, notes, where, seen } = input;
+  const notices: Completion[] = [];
+  for (const note of notes) {
+    const key = `note:${note.id}`;
+    const state = completionDelivery(launch.owner, key, seen.has(note.id) ? where : undefined);
+    if (state.kind === "published") {
+      release(launch.owner, key);
+    } else if (state.kind === "deliverable") {
+      notices.push(noteNotice(launch, note));
+    }
+  }
+  return notices;
+}
+
+function pendingNotesForRun(input: {
+  readonly base: string;
+  readonly owner: string;
+  readonly id: string;
+  readonly launch?: Launch | undefined;
+  readonly where: "file" | "memory";
+  readonly getSeen: () => ReadonlySet<string>;
+  readonly awaited: Set<string>;
+}): Completion[] {
+  const { base, owner, id, where, getSeen, awaited } = input;
+  awaited.add(path.join(runDirectory(base, id), "overseer-notes.json"));
+  const notes = readOverseerNotes(base, id);
+  if (notes.length === 0) {
+    return [];
+  }
+  const launch = input.launch ?? launchAt(base, id, owner);
+  return collectNoteNotices({ launch, notes, where, seen: getSeen() });
+}
+
+function pendingOverseerNotices(
   ctx: Pick<ExtensionContext, "sessionManager">,
   options: { base: string; owner: string; unsettledIds: readonly string[]; awaited: Set<string> },
 ): Completion[] {
@@ -242,22 +305,34 @@ function pendingEscalations(
   if (unsettledIds.length === 0) {
     return [];
   }
-  let seen: ReadonlySet<string> | undefined;
+  let seenEsc: ReadonlySet<string> | undefined;
+  let seenNotes: ReadonlySet<string> | undefined;
+  const getSeenNotes = (): ReadonlySet<string> => {
+    seenNotes ??= noteReceipts(ctx.sessionManager, owner);
+    return seenNotes;
+  };
   const where = ctx.sessionManager.getSessionFile() === undefined ? "memory" : "file";
   const notices: Completion[] = [];
   for (const id of unsettledIds) {
     const found = inspectRunEscalation(base, owner, id, awaited);
-    if (found === undefined) {
-      continue;
+    if (found !== undefined) {
+      seenEsc ??= escalationReceipts(ctx.sessionManager, owner);
+      const notice = collectEscalationNotice({ found, owner, where, seen: seenEsc });
+      if (notice !== undefined) {
+        notices.push(notice);
+      }
     }
-    seen ??= escalationReceipts(ctx.sessionManager, owner);
-    const key = `escalation:${found.escalation.id}`;
-    const state = completionDelivery(owner, key, seen.has(found.escalation.id) ? where : undefined);
-    if (state.kind === "published") {
-      release(owner, key);
-    } else if (state.kind === "deliverable") {
-      notices.push(escalationNotice(found.launch, found.escalation));
-    }
+    notices.push(
+      ...pendingNotesForRun({
+        base,
+        owner,
+        id,
+        launch: found?.launch,
+        where,
+        getSeen: getSeenNotes,
+        awaited,
+      }),
+    );
   }
   return notices;
 }
@@ -284,7 +359,6 @@ interface Completed {
   readonly createdAt: number;
   readonly loaded?: Loaded | undefined;
 }
-// Validated settled runs by file stamp, so polling does not reparse unchanged history.
 const settledRuns = new Map<string, Map<string, Settled>>();
 function stamp(file: string): string | undefined {
   const stat = fs.statSync(file, { bigint: true, throwIfNoEntry: false });
@@ -294,7 +368,6 @@ function pendingJournal(file: string): PendingJournal | undefined {
   try {
     return { file, stamp: stamp(file) };
   } catch {
-    // Unavailable metadata cannot validate a cached attempt or hide execution.
     return undefined;
   }
 }
@@ -315,8 +388,6 @@ function load(base: string, id: string, owner: string): Loaded {
   if (accountingState(result).kind !== "pending") {
     return { launch, result };
   }
-  // Only pending runs need this pre-read stamp to observe concurrent publication.
-  // readResult revalidates canonical state afterward: a miss intentionally reads result.json twice.
   const journal = pendingJournal(launch.sessionFile);
   return { launch, result: readResult(base, launch), journal };
 }
@@ -348,8 +419,6 @@ function completedRun({ base, owner, known, settled }: Scan, id: string): Comple
     return;
   }
   const order = { endedAt: loaded.result.endedAt, createdAt: loaded.launch.createdAt };
-  // Pending accounting retries on child changes, even after the completion receipt.
-  // Ordinary settled history retains its launch/result-only idle probes.
   const pending = accountingState(loaded.result).kind === "pending" ? loaded : undefined;
   if (launch !== undefined && result !== undefined && cacheableResult(loaded)) {
     settled.set(id, { launch, result, pending, ...order });
@@ -393,7 +462,6 @@ function completed(
 }
 export interface Reconciliation {
   readonly notices: Completion[];
-  /** Canonical files whose publication can change what this owner must deliver. */
   readonly awaited: ReadonlySet<string>;
 }
 export function notifications(
@@ -405,7 +473,7 @@ export function notifications(
   const awaited = new Set<string>();
   const unsettledIds: string[] = [];
   const runs = completed(base, owner, awaited, unsettledIds);
-  notices.push(...pendingEscalations(ctx, { base, owner, unsettledIds, awaited }));
+  notices.push(...pendingOverseerNotices(ctx, { base, owner, unsettledIds, awaited }));
   const receipts = runs.length === 0 ? undefined : completionReceipts(ctx.sessionManager, owner);
   const where = ctx.sessionManager.getSessionFile() === undefined ? "memory" : "file";
   for (const run of runs) {

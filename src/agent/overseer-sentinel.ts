@@ -1,35 +1,43 @@
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
-import type { DelegationContract, Escalation, Launch } from "./contracts.ts";
-import { activeContract } from "./overseer-contract.ts";
-import { ToolErrorWindow } from "./overseer-evidence.ts";
+import type {
+  AgentBeforeSettleEvent,
+  BoundaryResult,
+  ExtensionAPI,
+  ExtensionContext,
+  TurnEndEvent,
+} from "@earendil-works/pi-coding-agent";
 import {
-  acceptedPoint,
-  captureRepoSnapshot,
-  changesDiff,
-  changesDiffCommand,
-  changesStat,
-  launchPoint,
-  ownChanges,
-  type OwnChanges,
-  type RepoSnapshot,
-  type ReviewPoint,
-} from "./overseer-git.ts";
+  overseerNotesSchema,
+  type CheckpointKind,
+  type Escalation,
+  type Launch,
+  type OverseerNote,
+  type OverseerNotes,
+  type SkepticFinding,
+} from "./contracts.ts";
 import {
-  checkDeterministicTripwires,
+  captureSnapshot,
+  diffSnapshots,
+  type TreeDelta,
+  type TreeSnapshot,
+} from "./overseer-diff.ts";
+import {
   clearJudgeUnavailable,
-  evaluateLiveDecisionCheckpoint,
-  isEscalationReleased,
-  isJudgeDisabled,
   recordJudgeCheckpoint,
   recordJudgeUnavailable,
-  type LiveJudgeOutcome,
-  type Violation,
-} from "./overseer-judge.ts";
-import { EscalationPause, type EscalationAnswer, type SteerCommand } from "./overseer-pause.ts";
+  ToolErrorWindow,
+} from "./overseer-evidence.ts";
 import { checkpointGuidance } from "./overseer-guidance.ts";
+import { EscalationPause, type EscalationAnswer, type SteerCommand } from "./overseer-pause.ts";
+import {
+  evaluateLiveSkeptic,
+  isJudgeDisabled,
+  type LiveSkepticOutcome,
+} from "./overseer-skeptic.ts";
 import { activeOverseer } from "./overseer.ts";
+import { notifyInventory } from "./inventory-events.ts";
+import { read, runDirectory, write } from "./storage.ts";
 
 const MUTATING_TOOLS = new Set([
   "edit",
@@ -39,71 +47,38 @@ const MUTATING_TOOLS = new Set([
   "apply_patch",
   "bash",
 ]);
-const JUDGE_TURN_INTERVAL = 4;
-const JUDGE_DIFF_DELTA = 120;
+const SKEPTIC_TURN_INTERVAL = 4;
+const SKEPTIC_DIFF_DELTA = 120;
 const ESCALATION_EXCERPT_CHARS = 3000;
 
 interface RunSentinelState {
   readonly runId: string;
-  launch: ReviewPoint;
-  baseBranch: string | undefined;
-  /**
-   * The last state that passed: approved by the overseer, unchanged, or cleared by the judge.
-   * The scope check and the judge see only the work after it.
-   */
-  reviewPoint: ReviewPoint;
-  /** The last state the overseer approved, or launch. A pause shows all the work after it. */
-  approved: ReviewPoint;
-  /** True only after an overseer approval verdict; survives launch-snapshot baseBranch refreshes. */
-  hasApproval: boolean;
-  /** Base-branch issues the overseer approved. An approved issue is not raised again. */
-  readonly approvedBranchIssues: Set<string>;
   readonly excludePaths: readonly string[];
+  /** Last snapshot the parent saw (or launch). Every checkpoint shows the delta since here. */
+  lastSeen: TreeSnapshot;
+  hasSeenCheckpoint: boolean;
+  shapeChecked: boolean;
+  /** Last snapshot the skeptic evaluated, and the line count of the delta it saw. */
+  lastSkeptic: { readonly tree: string | undefined; readonly lines: number };
+  turnsSinceSkeptic: number;
   readonly toolErrors: ToolErrorWindow;
   readonly admittedCorrections: Map<string, string>;
-  turnsSinceJudge: number;
-  /** The state the judge last saw, and the size of the new work it saw then. */
-  judged: { readonly tree: string | undefined; readonly lines: number };
-  /** The classifiers whose request failed in this run. On `auto` the judge asks them last. */
   readonly failedJudges: Set<string>;
-  /** Pauses so far, and how many of them the overseer answered with a steer. */
   pauses: number;
   steers: number;
 }
 
-/** The child's own work between an accepted state and `snapshot`. */
-interface Work {
-  readonly snapshot: RepoSnapshot;
-  readonly changes: OwnChanges;
-  readonly diff: string;
-}
-
-function lineCount(diff: string): number {
-  return diff === "" ? 0 : diff.split("\n").length;
-}
-
-function shouldRunJudgeCheckpoint(
-  state: RunSentinelState,
-  checkpoint: Work,
-  finalSettle: boolean,
-): boolean {
-  if (finalSettle) {
-    return true;
-  }
-  // The judge was already asked about this exact state.
-  if (checkpoint.snapshot.tree === state.judged.tree) {
-    return false;
-  }
-  return (
-    state.turnsSinceJudge >= JUDGE_TURN_INTERVAL ||
-    Math.abs(lineCount(checkpoint.diff) - state.judged.lines) >= JUDGE_DIFF_DELTA
-  );
+interface PausePayload {
+  readonly kind: CheckpointKind;
+  readonly summary: string;
+  readonly model?: string | undefined;
+  readonly findings?: readonly SkepticFinding[] | undefined;
+  readonly toolErrorTurns?: Escalation["toolErrorTurns"] | undefined;
 }
 
 interface SentinelOptions {
   readonly base: string;
   readonly activeLaunch: () => Launch;
-  /** Entries that predate this run, including any inherited fork conversation. */
   readonly activeRunBaseline: () => ReadonlySet<string> | undefined;
   readonly isStopping: () => boolean;
   readonly admitPending?: () => void;
@@ -111,8 +86,64 @@ interface SentinelOptions {
   readonly queueCorrections: (commands: readonly SteerCommand[]) => void;
 }
 
-export function harnessExcludePaths(base: string, launch: Launch): string[] {
-  return [base, launch.agentDir, path.dirname(launch.sessionFile)];
+export const harnessExcludePaths = (base: string, launch: Launch): string[] => [
+  base,
+  launch.agentDir,
+  path.dirname(launch.sessionFile),
+];
+
+export const readOverseerNotes = (base: string, runId: string): OverseerNote[] =>
+  read(path.join(runDirectory(base, runId), "overseer-notes.json"), overseerNotesSchema)?.notes ??
+  [];
+
+function appendOverseerNote(base: string, note: OverseerNote): void {
+  const file = path.join(runDirectory(base, note.runId), "overseer-notes.json");
+  const next: OverseerNotes = { version: 1, notes: [...readOverseerNotes(base, note.runId), note] };
+  write(file, next);
+  notifyInventory(base, note.runId);
+}
+
+const shouldTriggerShapeCheck = (state: RunSentinelState, delta: TreeDelta): boolean =>
+  !state.shapeChecked && !delta.unreadable && delta.files.length > 0;
+
+function shouldRunSkeptic(
+  state: RunSentinelState,
+  snapshot: TreeSnapshot,
+  delta: TreeDelta,
+  finalSettle: boolean,
+): boolean {
+  if (delta.unreadable || delta.files.length === 0 || delta.diff === "") {
+    return false;
+  }
+  if (snapshot.tree !== undefined && snapshot.tree === state.lastSkeptic.tree) {
+    return false;
+  }
+  return (
+    finalSettle ||
+    state.turnsSinceSkeptic >= SKEPTIC_TURN_INTERVAL ||
+    Math.abs(delta.lineCount - state.lastSkeptic.lines) >= SKEPTIC_DIFF_DELTA
+  );
+}
+
+function structuralTurnPayload(
+  current: RunSentinelState,
+  delta: TreeDelta,
+): PausePayload | undefined {
+  if (delta.unreadable) {
+    return {
+      kind: current.shapeChecked ? "final_diff" : "shape_check",
+      summary:
+        "Working-tree diff is unavailable (git snapshot unreadable or pruned); inspect changes before continuing.",
+    };
+  }
+  if (!shouldTriggerShapeCheck(current, delta)) {
+    return undefined;
+  }
+  const plural = delta.files.length === 1 ? "" : "s";
+  return {
+    kind: "shape_check",
+    summary: `Early shape check: first substantive edits (${delta.files.length} file${plural}, ${delta.lineCount} diff lines).`,
+  };
 }
 
 export class OverseerSentinel {
@@ -124,40 +155,32 @@ export class OverseerSentinel {
     this.options = options;
   }
 
-  private primeBaseline(launch: Launch): void {
-    const contract = activeContract(this.options.base, launch);
-    if (contract !== undefined) {
-      this.ensureState(launch, contract);
-    }
-  }
-
   steerPaused(command: SteerCommand): boolean {
     return this.pause?.steer(command) ?? false;
   }
 
-  private ensureState(launch: Launch, contract?: DelegationContract): RunSentinelState {
+  private primeBaseline(launch: Launch): void {
+    if (activeOverseer(this.options.base, launch).enabled) {
+      this.ensureState(launch);
+    }
+  }
+
+  private ensureState(launch: Launch): RunSentinelState {
     if (this.state?.runId === launch.id) {
       return this.state;
     }
-    const baseBranch = (contract ?? activeContract(this.options.base, launch))?.baseBranch;
     const excludePaths = harnessExcludePaths(this.options.base, launch);
-    const point = launchPoint(launch.cwd, {
-      baseBranch,
-      excludePaths,
-    });
+    const start = captureSnapshot(launch.cwd, excludePaths);
     this.state = {
       runId: launch.id,
-      launch: point,
-      baseBranch,
-      reviewPoint: point,
-      approved: point,
-      hasApproval: false,
-      approvedBranchIssues: new Set(),
       excludePaths,
+      lastSeen: start,
+      hasSeenCheckpoint: false,
+      shapeChecked: false,
+      lastSkeptic: { tree: start.tree, lines: 0 },
+      turnsSinceSkeptic: 0,
       toolErrors: new ToolErrorWindow(),
       admittedCorrections: new Map(),
-      turnsSinceJudge: 0,
-      judged: { tree: point.snapshot.tree, lines: 0 },
       failedJudges: new Set(),
       pauses: 0,
       steers: 0,
@@ -165,97 +188,12 @@ export class OverseerSentinel {
     return this.state;
   }
 
-  /** Refreshes the launch snapshot's base-branch refs when baseBranch is amended mid-run. */
-  private syncBaseBranch(launch: Launch, baseBranch: string | undefined): void {
-    const state = this.state;
-    if (state === undefined || state.baseBranch === baseBranch) {
-      return;
-    }
-    state.baseBranch = baseBranch;
-    state.approvedBranchIssues.clear();
-    const refreshed = captureRepoSnapshot(launch.cwd, {
-      baseBranch,
-      excludePaths: state.excludePaths,
-    });
-    state.launch = {
-      ...state.launch,
-      snapshot: {
-        ...state.launch.snapshot,
-        baseBranch: refreshed.baseBranch,
-        localBaseHead: refreshed.localBaseHead,
-        upstreamHead: refreshed.upstreamHead,
-        resolvedBaseHead: refreshed.resolvedBaseHead,
-        baseBranchUnborn: refreshed.baseBranchUnborn,
-      },
-    };
-  }
-
-  private workSince(launch: Launch, point: ReviewPoint, snapshot: RepoSnapshot): Work {
-    const { excludePaths } = this.ensureState(launch);
-    const changes = ownChanges(launch.cwd, point, snapshot, excludePaths);
-    return { snapshot, changes, diff: changesDiff(changes) };
-  }
-
-  /** The files the child changed between launch and an accepted state. */
-  private changedBefore(launch: Launch, point: ReviewPoint): string[] {
-    const { launch: start, excludePaths } = this.ensureState(launch);
-    return [...ownChanges(launch.cwd, start, point.snapshot, excludePaths).files];
-  }
-
-  /** Moves the review point: later checks and judge verdicts cover only what changes after `snapshot`. */
-  private pass(launch: Launch, snapshot: RepoSnapshot): void {
-    const current = this.ensureState(launch);
-    current.reviewPoint = acceptedPoint(current.reviewPoint, snapshot);
-    current.judged = { tree: snapshot.tree, lines: 0 };
-    // The passed state has no work that still waits for a judge.
-    clearJudgeUnavailable(this.options.base, launch.id);
-  }
-
-  /** What a pause shows: all the work the overseer has not approved, not only what failed now. */
-  private unapprovedWork(
+  private async pauseForParent(
     launch: Launch,
-    checkpoint: Work,
-  ): Pick<
-    Escalation,
-    | "changedFiles"
-    | "diffExcerpt"
-    | "since"
-    | "stat"
-    | "diffCommand"
-    | "unchecked"
-    | "leftBehind"
-    | "approved"
-  > {
-    const current = this.ensureState(launch);
-    const unapproved =
-      current.approved === current.reviewPoint
-        ? checkpoint
-        : this.workSince(launch, current.approved, checkpoint.snapshot);
-    const everApproved = current.hasApproval;
-    const flagged = checkpoint.changes.files;
-    const diffCommand =
-      unapproved.diff.length > ESCALATION_EXCERPT_CHARS
-        ? changesDiffCommand(unapproved.changes)
-        : undefined;
-    return {
-      changedFiles: [...unapproved.changes.files],
-      diffExcerpt: unapproved.diff.slice(0, ESCALATION_EXCERPT_CHARS),
-      since: everApproved ? "approval" : "launch",
-      stat: changesStat(launch.cwd, unapproved.changes),
-      ...(diffCommand === undefined ? {} : { diffCommand }),
-      // Named only when it narrows the list: where the overseer should look first.
-      unchecked: flagged.join("\0") === unapproved.changes.files.join("\0") ? [] : [...flagged],
-      leftBehind: [...unapproved.changes.leftBehind],
-      approved: everApproved ? this.changedBefore(launch, current.approved) : [],
-    };
-  }
-
-  private async escalate(
-    launch: Launch,
-    issue: Violation,
-    checkpoint: Work,
-    toolErrorTurns?: Escalation["toolErrorTurns"],
-  ): Promise<void> {
+    payload: PausePayload,
+    snapshot: TreeSnapshot,
+    delta: TreeDelta,
+  ): Promise<EscalationAnswer> {
     const current = this.ensureState(launch);
     current.pauses += 1;
     current.toolErrors.clear();
@@ -264,12 +202,21 @@ export class OverseerSentinel {
       runId: launch.id,
       owner: launch.owner,
       at: Date.now(),
-      strikes: current.pauses,
+      pauseNumber: current.pauses,
+      kind: payload.kind,
+      summary: payload.summary,
+      ...(payload.model !== undefined ? { model: payload.model } : {}),
+      ...(payload.findings !== undefined && payload.findings.length > 0
+        ? { findings: [...payload.findings] }
+        : {}),
+      ...(payload.toolErrorTurns !== undefined ? { toolErrorTurns: payload.toolErrorTurns } : {}),
+      changedFiles: [...delta.files],
+      diffExcerpt: delta.diff.slice(0, ESCALATION_EXCERPT_CHARS),
+      diffDigest: snapshot.tree ?? "non-git",
+      since: current.hasSeenCheckpoint ? "checkpoint" : "launch",
+      ...(delta.stat !== "" ? { stat: delta.stat } : {}),
+      ...(delta.diffCommand !== undefined ? { diffCommand: delta.diffCommand } : {}),
       steers: current.steers,
-      ...issue,
-      ...(toolErrorTurns === undefined ? {} : { toolErrorTurns }),
-      ...this.unapprovedWork(launch, checkpoint),
-      diffDigest: checkpoint.snapshot.tree ?? "non-git",
     };
     const pause = new EscalationPause(launch.id);
     this.pause = pause;
@@ -277,42 +224,59 @@ export class OverseerSentinel {
       .wait(this.options.base, escalation, this.options.isStopping, {
         admitPending: this.options.admitPending,
         admitInlineSteer: this.options.admitInlineSteer,
-        shouldRelease: () => isEscalationReleased(this.options.base, launch, escalation),
+        shouldRelease: () => {
+          const live = activeOverseer(this.options.base, launch);
+          if (!live.enabled) {
+            return true;
+          }
+          return payload.kind === "skeptic" && live.judge === "off";
+        },
       })
       .finally(() => {
         this.pause = undefined;
       });
-    this.applyEscalationAnswer({ launch, issue, checkpoint, answer });
+    this.applyAnswer(launch, snapshot, payload.kind, answer);
+    return answer;
   }
 
-  private applyEscalationAnswer(input: {
-    readonly launch: Launch;
-    readonly issue: Violation;
-    readonly checkpoint: Work;
-    readonly answer: EscalationAnswer;
-  }): void {
-    const { launch, issue, checkpoint, answer } = input;
+  private advanceWatermark(launch: Launch, snapshot: TreeSnapshot, kind: CheckpointKind): void {
+    const current = this.state;
+    if (current === undefined) {
+      return;
+    }
+    const lostGit = current.lastSeen.isGit && !snapshot.isGit;
+    const next =
+      snapshot.unreadable || lostGit ? captureSnapshot(launch.cwd, current.excludePaths) : snapshot;
+    if (!next.unreadable && (!current.lastSeen.isGit || next.isGit)) {
+      current.lastSeen = next;
+      current.lastSkeptic = { tree: next.tree, lines: 0 };
+    }
+    current.hasSeenCheckpoint = true;
+    if (kind !== "tool_errors") {
+      current.shapeChecked = true;
+    }
+  }
+
+  private applyAnswer(
+    launch: Launch,
+    snapshot: TreeSnapshot,
+    kind: CheckpointKind,
+    answer: EscalationAnswer,
+  ): void {
+    const current = this.state;
+    if (current === undefined || answer.verdict === "stopped") {
+      return;
+    }
     if (answer.verdict === "released") {
       if (isJudgeDisabled(this.options.base, launch)) {
         clearJudgeUnavailable(this.options.base, launch.id);
       }
-      if (this.state !== undefined) {
-        this.state.judged = { tree: "", lines: 0 };
-      }
+      current.lastSkeptic = { tree: undefined, lines: 0 };
       return;
     }
-    const current = this.state;
-    if (answer.verdict === "stopped" || current === undefined) {
-      return;
-    }
-    if (answer.verdict === "approved") {
-      this.pass(launch, checkpoint.snapshot);
-      current.approved = current.reviewPoint;
-      current.hasApproval = true;
-      if (issue.kind === "branch_violation") {
-        current.approvedBranchIssues.add(issue.summary);
-      }
-    }
+    // Parent reviewed this state: advance watermark to a readable snapshot without poisoning lastSeen.
+    this.advanceWatermark(launch, snapshot, kind);
+    clearJudgeUnavailable(this.options.base, launch.id);
     if (answer.commands.length > 0) {
       current.steers += 1;
       for (const { id, prompt } of answer.commands) {
@@ -322,173 +286,230 @@ export class OverseerSentinel {
     }
   }
 
-  private async inspectCheckpoint(
+  private async runSkeptic(
     launch: Launch,
     ctx: ExtensionContext,
-    finalSettle: boolean,
-    toolErrorTurns?: Escalation["toolErrorTurns"],
-  ): Promise<void> {
-    const contract = activeContract(this.options.base, launch);
-    if (
-      !activeOverseer(this.options.base, launch).enabled ||
-      contract === undefined ||
-      this.options.isStopping()
-    ) {
-      return;
-    }
-    const current = this.ensureState(launch, contract);
-    this.syncBaseBranch(launch, contract.baseBranch);
-    const snapshot = captureRepoSnapshot(launch.cwd, {
-      baseBranch: contract.baseBranch,
-      excludePaths: current.excludePaths,
-    });
-    const checkpoint = this.workSince(launch, current.reviewPoint, snapshot);
-    if (toolErrorTurns !== undefined) {
-      return this.escalate(
-        launch,
-        {
-          kind: "loop_violation",
-          summary: `${toolErrorTurns.length} consecutive turns reported tool errors.`,
-        },
-        checkpoint,
-        toolErrorTurns,
-      );
-    }
-    const issue = checkDeterministicTripwires({
-      cwd: launch.cwd,
-      contract,
-      launch: current.launch.snapshot,
-      current: snapshot,
-      changes: checkpoint.changes,
-    });
-    if (issue !== undefined && !current.approvedBranchIssues.has(issue.summary)) {
-      return this.escalate(launch, issue, checkpoint);
-    }
-    return this.judge(launch, contract, ctx, { checkpoint, finalSettle });
-  }
-
-  /** Asks the judge about the new work when a trigger holds; a clean answer moves the review point. */
-  private async judge(
-    launch: Launch,
-    contract: DelegationContract,
-    ctx: ExtensionContext,
-    options: { readonly checkpoint: Work; readonly finalSettle: boolean },
-  ): Promise<void> {
-    const initialLive = activeOverseer(this.options.base, launch);
-    if (!initialLive.enabled) {
+    snapshot: TreeSnapshot,
+    delta: TreeDelta,
+  ): Promise<LiveSkepticOutcome> {
+    const live = activeOverseer(this.options.base, launch);
+    if (!live.enabled || live.judge === "off") {
       clearJudgeUnavailable(this.options.base, launch.id);
-      return;
+      return { kind: "disabled" };
     }
-    const { checkpoint, finalSettle } = options;
-    const current = this.ensureState(launch, contract);
-    const { snapshot } = checkpoint;
-    if (checkpoint.changes.files.length === 0) {
-      this.pass(launch, snapshot);
-      return;
-    }
-    if (!shouldRunJudgeCheckpoint(current, checkpoint, finalSettle)) {
-      return;
-    }
-    if (initialLive.judge === "off") {
-      current.turnsSinceJudge = 0;
-      current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
-      clearJudgeUnavailable(this.options.base, launch.id);
-      this.pass(launch, snapshot);
-      return;
-    }
-    const acceptedFiles = this.changedBefore(launch, current.reviewPoint);
+    const current = this.ensureState(launch);
     const guidance = checkpointGuidance(ctx.sessionManager, launch, {
       baseline: this.options.activeRunBaseline(),
       admittedCorrections: current.admittedCorrections,
     });
-    const outcome = await evaluateLiveDecisionCheckpoint(this.options.base, launch, {
+    const outcome = await evaluateLiveSkeptic(this.options.base, launch, {
       modelRegistry: ctx.modelRegistry,
-      judgeSpec: initialLive.judge,
-      prompt: launch.prompt,
-      continuation: launch.predecessor !== undefined,
+      judgeSpec: live.judge,
+      ownerContext: launch.ownerContext,
+      taskPrompt: launch.prompt,
       guidance,
-      contract,
-      changedFiles: checkpoint.changes.files,
-      acceptedFiles,
-      diff: checkpoint.diff,
+      changedFiles: delta.files,
+      diff: delta.diff,
       failed: current.failedJudges,
-      // Cancelling the child's run or disabling the judge mid-run cancels its judge request.
       signal: ctx.signal,
     });
-    await this.applyJudgeOutcome(launch, checkpoint, outcome);
+    this.recordSkepticOutcome(launch, snapshot, delta, outcome);
+    return outcome;
   }
 
-  private async applyJudgeOutcome(
+  private recordSkepticOutcome(
     launch: Launch,
-    checkpoint: Work,
-    outcome: LiveJudgeOutcome,
-  ): Promise<void> {
+    snapshot: TreeSnapshot,
+    delta: TreeDelta,
+    outcome: LiveSkepticOutcome,
+  ): void {
     if (outcome.kind === "disabled") {
       clearJudgeUnavailable(this.options.base, launch.id);
       return;
     }
     if (outcome.kind === "aborted") {
-      // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.
       return;
     }
     const current = this.ensureState(launch);
-    current.turnsSinceJudge = 0;
-    current.judged = { tree: checkpoint.snapshot.tree, lines: lineCount(checkpoint.diff) };
+    current.turnsSinceSkeptic = 0;
+    current.lastSkeptic = { tree: snapshot.tree, lines: delta.lineCount };
     if (outcome.kind === "skipped") {
       clearJudgeUnavailable(this.options.base, launch.id);
-      this.pass(launch, checkpoint.snapshot);
       return;
     }
     recordJudgeCheckpoint(this.options.base, launch.id, outcome.checkpoint);
     if (outcome.kind === "unavailable") {
-      // No judge answered. That is no finding about the work, so the child is not paused. The
-      // review point stays: a later checkpoint asks again about all the work since then, and
-      // the completion notice reports a run that ends with work no judge answered for.
       recordJudgeUnavailable(this.options.base, launch.id, outcome.error);
       return;
     }
-    // A classifier answered: the work is judged, whatever the verdict.
     clearJudgeUnavailable(this.options.base, launch.id);
-    if (outcome.verdict === undefined) {
-      this.pass(launch, checkpoint.snapshot);
-      return;
-    }
-    if (!this.options.isStopping()) {
-      await this.escalate(launch, outcome.verdict, checkpoint);
+    if (outcome.verdict.blocking.length === 0 && outcome.verdict.notes.length > 0) {
+      appendOverseerNote(this.options.base, {
+        id: randomUUID(),
+        runId: launch.id,
+        owner: launch.owner,
+        at: Date.now(),
+        model: outcome.verdict.model,
+        findings: [...outcome.verdict.notes],
+      });
     }
   }
 
-  private async onTurnEnd(event: TurnEndEvent, ctx: ExtensionContext) {
-    const launch = this.options.activeLaunch();
-    const contract = activeContract(this.options.base, launch);
-    if (!activeOverseer(this.options.base, launch).enabled || contract === undefined) {
+  private async checkTurnDelta(
+    launch: Launch,
+    ctx: ExtensionContext,
+    snapshot: TreeSnapshot,
+    delta: TreeDelta,
+  ): Promise<void> {
+    if (launch.readOnly === true || delta.files.length === 0) {
       return;
     }
-    const current = this.ensureState(launch, contract);
+    const current = this.ensureState(launch);
+    const structural = structuralTurnPayload(current, delta);
+    if (structural !== undefined) {
+      await this.pauseForParent(launch, structural, snapshot, delta);
+      return;
+    }
+    if (!shouldRunSkeptic(current, snapshot, delta, false)) {
+      return;
+    }
+    const outcome = await this.runSkeptic(launch, ctx, snapshot, delta);
+    if (
+      outcome.kind === "verdict" &&
+      outcome.verdict.blocking.length > 0 &&
+      !this.options.isStopping()
+    ) {
+      const count = outcome.verdict.blocking.length;
+      await this.pauseForParent(
+        launch,
+        {
+          kind: "skeptic",
+          model: outcome.verdict.model,
+          summary: `${outcome.verdict.model} flagged ${count} grounded concern${count === 1 ? "" : "s"}.`,
+          findings: outcome.verdict.blocking,
+        },
+        snapshot,
+        delta,
+      );
+    }
+  }
+
+  private async onTurnEnd(event: TurnEndEvent, ctx: ExtensionContext): Promise<void> {
+    const launch = this.options.activeLaunch();
+    if (!activeOverseer(this.options.base, launch).enabled || this.options.isStopping()) {
+      return;
+    }
+    const current = this.ensureState(launch);
     const toolErrorTurns = current.toolErrors.record(event);
     const mutated = event.toolResults.some((result) => MUTATING_TOOLS.has(result.toolName));
     if (mutated) {
-      current.turnsSinceJudge += 1;
+      current.turnsSinceSkeptic += 1;
     }
     if (!mutated && toolErrorTurns === undefined) {
       return;
     }
-    await this.inspectCheckpoint(launch, ctx, false, toolErrorTurns);
+    const snapshot = captureSnapshot(launch.cwd, current.excludePaths);
+    const delta = diffSnapshots(launch.cwd, current.lastSeen, snapshot, ESCALATION_EXCERPT_CHARS);
+    if (toolErrorTurns !== undefined) {
+      await this.pauseForParent(
+        launch,
+        {
+          kind: "tool_errors",
+          summary: `${toolErrorTurns.length} consecutive turns reported tool errors.`,
+          toolErrorTurns,
+        },
+        snapshot,
+        delta,
+      );
+      return;
+    }
+    await this.checkTurnDelta(launch, ctx, snapshot, delta);
+  }
+
+  private buildFinalPayload(
+    delta: TreeDelta,
+    skeptic: { readonly model: string; readonly findings: readonly SkepticFinding[] } | undefined,
+  ): PausePayload {
+    if (skeptic !== undefined) {
+      const count = skeptic.findings.length;
+      return {
+        kind: "skeptic",
+        model: skeptic.model,
+        findings: skeptic.findings,
+        summary: `Pre-ship check: ${skeptic.model} flagged ${count} grounded concern${count === 1 ? "" : "s"} before completion.`,
+      };
+    }
+    if (delta.unreadable) {
+      return {
+        kind: "final_diff",
+        summary:
+          "Final diff check: working-tree diff is unavailable (git snapshot unreadable or pruned); inspect changes before completion.",
+      };
+    }
+    const plural = delta.files.length === 1 ? "" : "s";
+    return {
+      kind: "final_diff",
+      summary: `Final diff check: ${delta.files.length} file${plural} (${delta.lineCount} diff lines) changed since last look.`,
+    };
+  }
+
+  private async evaluateFinalSkeptic(
+    launch: Launch,
+    ctx: ExtensionContext,
+    snapshot: TreeSnapshot,
+    delta: TreeDelta,
+  ): Promise<{ readonly model: string; readonly findings: readonly SkepticFinding[] } | undefined> {
+    const current = this.ensureState(launch);
+    if (!shouldRunSkeptic(current, snapshot, delta, true)) {
+      return undefined;
+    }
+    const outcome = await this.runSkeptic(launch, ctx, snapshot, delta);
+    return outcome.kind === "verdict" && outcome.verdict.blocking.length > 0
+      ? { model: outcome.verdict.model, findings: outcome.verdict.blocking }
+      : undefined;
+  }
+
+  private async onBeforeSettle(
+    event: AgentBeforeSettleEvent,
+    ctx: ExtensionContext,
+  ): Promise<BoundaryResult | undefined> {
+    const launch = this.options.activeLaunch();
+    const skip =
+      event.outcome !== "completed" ||
+      !activeOverseer(this.options.base, launch).enabled ||
+      launch.readOnly === true ||
+      this.options.isStopping();
+    if (skip) {
+      return undefined;
+    }
+    const current = this.ensureState(launch);
+    const snapshot = captureSnapshot(launch.cwd, current.excludePaths);
+    const delta = diffSnapshots(launch.cwd, current.lastSeen, snapshot, ESCALATION_EXCERPT_CHARS);
+    if (delta.files.length === 0) {
+      return undefined;
+    }
+    const skeptic = await this.evaluateFinalSkeptic(launch, ctx, snapshot, delta);
+    if (this.options.isStopping()) {
+      return undefined;
+    }
+    const answer = await this.pauseForParent(
+      launch,
+      this.buildFinalPayload(delta, skeptic),
+      snapshot,
+      delta,
+    );
+    return answer.verdict !== "stopped" &&
+      answer.verdict !== "released" &&
+      answer.commands.length > 0
+      ? { continue: true }
+      : undefined;
   }
 
   attach(pi: ExtensionAPI): void {
-    pi.on("session_start", () => {
-      this.primeBaseline(this.options.activeLaunch());
-    });
-    pi.on("before_agent_start", () => {
-      this.primeBaseline(this.options.activeLaunch());
-    });
+    const prime = () => this.primeBaseline(this.options.activeLaunch());
+    pi.on("session_start", prime);
+    pi.on("before_agent_start", prime);
     pi.on("turn_end", (event, ctx) => this.onTurnEnd(event, ctx));
-    pi.on("agent_before_settle", async (event, ctx) => {
-      if (event.outcome !== "completed") {
-        return;
-      }
-      await this.inspectCheckpoint(this.options.activeLaunch(), ctx, true);
-    });
+    pi.on("agent_before_settle", (event, ctx) => this.onBeforeSettle(event, ctx));
   }
 }

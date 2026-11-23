@@ -4,15 +4,65 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import {
   escalationResolutionSchema,
   escalationSchema,
+  toolErrorTurnSchema,
   type Command,
   type Escalation,
   type EscalationResolution,
   type Launch,
 } from "./contracts.ts";
 import { read, runDirectory, write } from "./storage.ts";
+import { Type } from "./typebox.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 import { OVERSEER_STATE_FILE } from "./overseer.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
+
+/** Pre-V2 escalation payload written by children launched before the checkpoint redesign. */
+const legacyEscalationSchema = Type.Object({
+  id: Type.String(),
+  runId: Type.String(),
+  owner: Type.String(),
+  at: Type.Number(),
+  strikes: Type.Integer({ minimum: 1 }),
+  kind: Type.Union([
+    Type.Literal("scope_violation"),
+    Type.Literal("branch_violation"),
+    Type.Literal("primitive_violation"),
+    Type.Literal("loop_violation"),
+  ]),
+  summary: Type.String(),
+  changedFiles: Type.Array(Type.String()),
+  diffExcerpt: Type.String(),
+  diffDigest: Type.String(),
+  since: Type.Optional(Type.Union([Type.Literal("launch"), Type.Literal("approval")])),
+  stat: Type.Optional(Type.String()),
+  diffCommand: Type.Optional(Type.String()),
+  steers: Type.Optional(Type.Integer({ minimum: 0 })),
+  toolErrorTurns: Type.Optional(Type.Array(toolErrorTurnSchema)),
+  classifierReview: Type.Optional(Type.Unknown()),
+});
+
+const anyEscalationSchema = Type.Union([escalationSchema, legacyEscalationSchema]);
+
+function legacyKind(kind: string, classifierReview: unknown): Escalation["kind"] {
+  if (kind === "loop_violation") {
+    return "tool_errors";
+  }
+  return classifierReview !== undefined ? "skeptic" : "final_diff";
+}
+
+export function readEscalation(file: string): Escalation | undefined {
+  const parsed = read(file, anyEscalationSchema);
+  if (parsed === undefined || "pauseNumber" in parsed) {
+    return parsed;
+  }
+  const { strikes, kind, since, classifierReview, ...rest } = parsed;
+  return {
+    ...rest,
+    pauseNumber: strikes,
+    kind: legacyKind(kind, classifierReview),
+    since: since === "approval" ? "checkpoint" : "launch",
+  };
+}
 
 export const OVERSEER_CORRECTION = "overseer-correction";
 export type SteerCommand = Extract<Command, { action: "steer" }>;
@@ -242,7 +292,7 @@ export function resolveActiveEscalation(
   steer?: { readonly id: string; readonly prompt: string },
 ): Escalation | undefined {
   const dir = runDirectory(base, launch.id);
-  const active = read(path.join(dir, "escalation.json"), escalationSchema);
+  const active = readEscalation(path.join(dir, "escalation.json"));
   if (active === undefined) {
     return undefined;
   }

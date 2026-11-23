@@ -3,11 +3,11 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { DelegationContract, Launch, OverseerLaunch } from "./contracts.ts";
+import type { Launch, OverseerLaunch } from "./contracts.ts";
 import type { DelegateInput } from "./tool-schemas.ts";
 import { loadSDK, packageRoot, runtimeEntry } from "./host.ts";
-import { validateDelegationScope } from "./overseer-scope.ts";
-import { ensureScratchDirectory, runDirectory, write } from "./storage.ts";
+import { captureOwnerContext } from "./overseer.ts";
+import { runDirectory, write } from "./storage.ts";
 
 export interface LaunchContext {
   readonly cwd: string;
@@ -92,6 +92,7 @@ function selectedModel(
     thinking: selectedThinking(input.thinking, thinking, resolved.suffix),
   };
 }
+
 function targetTrust(
   sdk: Awaited<ReturnType<typeof loadSDK>>,
   cwd: string,
@@ -108,14 +109,10 @@ function targetTrust(
   if (remembered !== null) {
     return remembered;
   }
-  // Resolve another project's global policy without loading its untrusted settings.
   const settings = sdk.SettingsManager.create(cwd, agentDir, { projectTrusted: false });
   return settings.getDefaultProjectTrust() === "always";
 }
-/**
- * The session id whose provider prompt cache holds the invoking session's conversation.
- * fitchmultz/pi records it as `cacheSessionId` in the header of a session that is itself a copy.
- */
+
 function cacheSessionId(
   manager: Pick<ExtensionContext["sessionManager"], "getHeader" | "getSessionId">,
 ): string {
@@ -136,22 +133,20 @@ function savedSessionHeader(
   return {
     ...header,
     parentSession: context.sessionManager.getSessionFile(),
-    // OpenAI routes a request to a cache by session id; the copied conversation is cached
-    // under the invoking session's. Hosts without `cacheSessionId` ignore the field.
     cacheSessionId: cacheSessionId(context.sessionManager),
   };
 }
 
 function optionalLaunchFields(options: {
   name?: string | undefined;
-  contract?: DelegationContract | undefined;
-  scratchDir?: string | undefined;
+  readOnly?: boolean | undefined;
+  ownerContext?: string | undefined;
   overseer?: OverseerLaunch | undefined;
 }) {
   return {
     ...(options.name !== undefined ? { name: options.name } : {}),
-    ...(options.contract !== undefined ? { contract: options.contract } : {}),
-    ...(options.scratchDir !== undefined ? { scratchDir: options.scratchDir } : {}),
+    ...(options.readOnly === true ? { readOnly: true } : {}),
+    ...(options.ownerContext !== undefined ? { ownerContext: options.ownerContext } : {}),
     ...(options.overseer !== undefined ? { overseer: options.overseer } : {}),
   };
 }
@@ -166,7 +161,6 @@ export async function prepareLaunch(options: {
   executionCwd: string;
   defaultModel?: string | undefined;
   defaultThinking?: ThinkingLevel | undefined;
-  contract?: DelegationContract | undefined;
   overseer?: OverseerLaunch | undefined;
 }): Promise<Launch> {
   const { input, context, base, owner, agentDir, thinking } = options;
@@ -175,9 +169,6 @@ export async function prepareLaunch(options: {
   const cwd = path.resolve(options.executionCwd, input.cwd ?? ".");
   if (!fs.statSync(cwd).isDirectory()) {
     throw new Error("Delegation cwd is not a directory.");
-  }
-  if (options.contract !== undefined) {
-    validateDelegationScope(cwd, options.contract.scope);
   }
   const selection = selectedModel(
     {
@@ -193,8 +184,6 @@ export async function prepareLaunch(options: {
   const id = randomUUID();
   const directory = runDirectory(base, id);
   fs.mkdirSync(directory, { mode: 0o700 });
-  const scratchDir =
-    options.contract === undefined ? undefined : ensureScratchDirectory(base, { rootId: id });
   const manager = sdk.SessionManager.create(cwd, directory);
   const sessionFile = manager.getSessionFile();
   const header = manager.getHeader();
@@ -203,12 +192,13 @@ export async function prepareLaunch(options: {
   }
   const inherited = input.context === "fork" ? context.sessionManager.getBranch() : [];
   const savedHeader = savedSessionHeader(input, header, context);
-  // Preserve the full native branch: no semantic tool filter or canned body.
   fs.writeFileSync(
     sessionFile,
     [savedHeader, ...inherited].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
     { flag: "wx", mode: 0o600 },
   );
+  const ownerContext =
+    options.overseer?.enabled === true ? captureOwnerContext(context.sessionManager) : undefined;
   const launch: Launch = {
     version: 1,
     id,
@@ -228,14 +218,12 @@ export async function prepareLaunch(options: {
     trusted,
     ...optionalLaunchFields({
       name: input.name,
-      contract: options.contract,
-      scratchDir,
+      readOnly: input.readOnly,
+      ownerContext,
       overseer: options.overseer,
     }),
     createdAt: Date.now(),
   };
-  // Retain even unpublished native journals on failure, including full fork evidence.
-  // Inventory admits only directories with a canonical launch.json.
   write(path.join(directory, "launch.json"), launch, true);
   return launch;
 }

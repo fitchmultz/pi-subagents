@@ -8,25 +8,16 @@ import {
   commandMetadataSchema,
   exitSchema,
   wakeFailureSchema,
-  type DelegationContract,
   type Escalation,
   type JudgeCheckpoint,
   type Launch,
-  type OverseerReview,
   type Result,
   type Waiting,
 } from "./contracts.ts";
 import type { RunsInput } from "./tool-schemas.ts";
-import { conversation, read, runDirectory, scratchDirectory } from "./storage.ts";
+import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
-import {
-  activeContract,
-  inspectContract,
-  type ContractAmendmentSummary,
-} from "./overseer-contract.ts";
-import { escalationEvidenceLines } from "./overseer-evidence.ts";
-import { inspectJudgeCheckpoints } from "./overseer-judge.ts";
-import { needsOverseerReview, readReview } from "./overseer-review.ts";
+import { checkpointEvidenceLines, inspectJudgeCheckpoints } from "./overseer-evidence.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
 import {
   pauseLabel,
@@ -37,6 +28,7 @@ import {
   runWaiting,
   type RunStatus,
 } from "./run-state.ts";
+
 interface Guidance {
   id: string;
   runId: string;
@@ -48,10 +40,10 @@ interface Guidance {
 interface ToolReply {
   content: { type: "text"; text: string }[];
   details: unknown;
-  /** What a codemode script receives in place of the model text. */
   structuredContent?: string;
   isError?: boolean;
 }
+
 interface RunSummary {
   id: string;
   owner: string;
@@ -59,8 +51,7 @@ interface RunSummary {
   predecessor?: string | undefined;
   name?: string | undefined;
   cwd: string;
-  contract?: DelegationContract | undefined;
-  scratchDir?: string | undefined;
+  readOnly?: true | undefined;
   model: string;
   thinking: string;
   context: string;
@@ -68,12 +59,8 @@ interface RunSummary {
   status: RunStatus;
   completed: boolean;
   result?: Pick<Result, "status" | "endedAt" | "error"> | undefined;
-  /** A running run that stays open for its child's own unfinished background work. */
   waiting?: Waiting | undefined;
-  /** Active unresolved mid-run overseer escalation pausing this running child. */
   escalation?: Escalation | undefined;
-  review?: OverseerReview | undefined;
-  reviewRequired?: true | undefined;
   nativeReceipt: string | null;
   process: ReturnType<typeof processView>;
   lastWakeFailure?: { at: number; reason: string } | undefined;
@@ -82,24 +69,18 @@ interface RunSummary {
   outputFile: string;
   guidance: Guidance[];
 }
+
 interface RunView extends Omit<RunSummary, "result"> {
   result?: Result | undefined;
-  contractAmendments?: ContractAmendmentSummary[] | undefined;
   judgeCheckpoints?: JudgeCheckpoint[] | undefined;
   output: ReturnType<typeof outputView>;
 }
+
 type Receipt =
   | { readonly receipt: "launch"; readonly note: string }
   | { readonly receipt: "continuation" | "existing-successor" }
   | { readonly receipt: "guidance"; readonly command: string; readonly note: string }
-  | {
-      readonly receipt: "review";
-      readonly review: OverseerReview;
-      /** The approval released a pause of the running child. */
-      readonly released: boolean;
-      /** Steer command ID queued when `note` was provided with `verdict="approved"`. */
-      readonly command?: string | undefined;
-    }
+  | { readonly receipt: "checkpoint-approved"; readonly note: string }
   | {
       readonly stopRequest?: string | undefined;
       readonly stopAcknowledged: false;
@@ -109,9 +90,11 @@ type Receipt =
 function toolResult(value: unknown, text: string): ToolReply {
   return { content: [{ type: "text" as const, text }], details: value };
 }
+
 function utc(at: number): string {
   return `${new Date(at).toISOString().slice(0, 19)}Z`;
 }
+
 function receiptResult(result: Result | undefined) {
   if (result === undefined) {
     return;
@@ -129,7 +112,7 @@ function receiptResult(result: Result | undefined) {
     ...accounting,
   };
 }
-/** `observed` holds batched liveness by actor token; any other actor gets a fresh check. */
+
 function processView(base: string, launch: Launch, observed?: ReadonlyMap<string, boolean>) {
   const identity = actor(base, launch);
   const exit = identity
@@ -141,11 +124,13 @@ function processView(base: string, launch: Launch, observed?: ReadonlyMap<string
     exitKnown: exit !== undefined,
   };
 }
+
 function outputView(file: string, input: Pick<RunsInput, "offset" | "length">) {
   return fs.existsSync(file)
     ? readOutputPage(file, { offset: input.offset ?? 0, length: input.length ?? 32768 })
     : undefined;
 }
+
 function guidanceView(base: string, launches: readonly Launch[]): Map<string, Guidance[]> {
   const runs = new Map<string, Guidance[]>(launches.map((launch) => [launch.id, []]));
   for (const rootId of new Set(launches.map((launch) => launch.rootId))) {
@@ -187,7 +172,7 @@ function guidanceView(base: string, launches: readonly Launch[]): Map<string, Gu
   }
   return runs;
 }
-/** Batched actor liveness by actor token: one check per conversation. */
+
 async function observeActors(
   base: string,
   launches: readonly Launch[],
@@ -203,6 +188,7 @@ async function observeActors(
     }),
   );
 }
+
 function metadata(
   base: string,
   launch: Launch,
@@ -219,8 +205,6 @@ function metadata(
   const admission = runAdmission(base, launch);
   const state = runState(result, admission);
   const status = runStatus(base, launch, state, process.live);
-  const contract = activeContract(base, launch);
-  const scratchDir = contract !== undefined ? scratchDirectory(base, launch) : undefined;
   return {
     id: launch.id,
     owner: launch.owner,
@@ -228,8 +212,7 @@ function metadata(
     predecessor: launch.predecessor,
     name: launch.name,
     cwd: launch.cwd,
-    ...(contract !== undefined ? { contract } : {}),
-    ...(scratchDir !== undefined ? { scratchDir } : {}),
+    ...(launch.readOnly === true ? { readOnly: true as const } : {}),
     model: `${launch.provider}/${launch.model}`,
     thinking: launch.thinking,
     context: launch.context,
@@ -239,8 +222,6 @@ function metadata(
     result,
     waiting: runWaiting(base, launch, status),
     escalation: runEscalation(base, launch, status),
-    review: readReview(base, launch.id),
-    ...(needsOverseerReview(base, launch, result) ? { reviewRequired: true as const } : {}),
     nativeReceipt: options.ctx ? (published(options.ctx, launch) ?? null) : null,
     process,
     lastWakeFailure: read(
@@ -253,6 +234,7 @@ function metadata(
     guidance: options.guidance,
   };
 }
+
 async function summaries(
   base: string,
   launches: readonly Launch[],
@@ -279,6 +261,7 @@ async function summaries(
     };
   });
 }
+
 function projection(
   base: string,
   launch: Launch,
@@ -294,24 +277,7 @@ function projection(
     output: outputView(view.outputFile, input),
   };
 }
-function reviewReceiptText(
-  run: Pick<RunView, "id" | "name" | "status" | "reviewRequired">,
-  receipt: Extract<Receipt, { receipt: "review" }>,
-): string {
-  const { review, released, command } = receipt;
-  const label = run.name === undefined ? run.id : `${run.id} (${run.name})`;
-  let state = `The run's status is ${run.status}; ${run.reviewRequired === true ? "review its completed changes." : "it needs no further review."}`;
-  if (run.status === "running") {
-    state = released
-      ? "Pause approval recorded. Its next notice arrives when the child pauses again or ends."
-      : "The child is still running. If it finishes with changes, review the completed run.";
-  }
-  const delivery =
-    command === undefined
-      ? 'Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.'
-      : `Summary saved for review only. Steering note queued for the child (command ${command}; queue acceptance is not actual completion or model consumption).`;
-  return `Overseer review recorded: run ${label} ${review.verdict} at ${utc(review.at)}.\n${state}\n${delivery}`;
-}
+
 export function renderReceipt(
   base: string,
   launch: Launch,
@@ -319,13 +285,10 @@ export function renderReceipt(
   receipt: Receipt,
 ): ToolReply {
   const details = { ...projection(base, launch, ctx), ...receipt };
-  if ("receipt" in receipt && receipt.receipt === "review") {
-    return toolResult(details, reviewReceiptText(details, receipt));
-  }
   const model = { ...details, result: receiptResult(details.result) };
   return toolResult(details, JSON.stringify(model, null, 2));
 }
-/** Running runs first, then newest first. Only runs without a result need a liveness check. */
+
 async function inventoryOrder(base: string, launches: readonly Launch[]): Promise<Launch[]> {
   const unsettled = launches.filter(
     (launch) => !fs.existsSync(path.join(runDirectory(base, launch.id), "result.json")),
@@ -345,17 +308,19 @@ async function inventoryOrder(base: string, launches: readonly Launch[]): Promis
     ...newest.filter((launch) => !running.has(launch.id)),
   ];
 }
+
 interface Inventory {
   runs: RunSummary[];
   offset: number;
   nextOffset: number | undefined;
   total: number;
 }
-/** The first item in full; inspection lists the rest. */
+
 function waitingMark({ work }: Waiting): string {
   const more = work.length > 1 ? ` +${work.length - 1} more` : "";
   return `[waiting on ${JSON.stringify(work[0]?.description ?? "")}${more}]`;
 }
+
 function inventoryRow(run: RunSummary): string {
   return [
     run.id,
@@ -363,12 +328,13 @@ function inventoryRow(run: RunSummary): string {
     run.result ? utc(run.result.endedAt) : "-",
     run.model,
     run.name === undefined ? "(unnamed)" : JSON.stringify(run.name),
+    ...(run.readOnly === true ? ["[read-only]"] : []),
     ...(run.waiting ? [waitingMark(run.waiting)] : []),
     ...(run.escalation ? [`[paused: ${pauseLabel(run.escalation)}]`] : []),
-    ...(run.reviewRequired === true ? ["[review required]"] : []),
     ...(run.lastWakeFailure ? ["[wake failed: inspect]"] : []),
   ].join(" ");
 }
+
 function inventoryText({ runs, offset, nextOffset, total }: Inventory): string {
   if (runs.length === 0) {
     return total === 0
@@ -381,7 +347,7 @@ function inventoryText({ runs, offset, nextOffset, total }: Inventory): string {
     ...runs.map(inventoryRow),
   ].join("\n");
 }
-/** The model reads one line per run. Details and scripts keep every summary field as JSON. */
+
 export async function renderInventory(
   base: string,
   launches: readonly Launch[],
@@ -402,25 +368,28 @@ export async function renderInventory(
     structuredContent: JSON.stringify(details, null, 2),
   };
 }
+
 function identityText(details: RunView): string {
   return [
-    `Name ${details.name === undefined ? "(unnamed)" : JSON.stringify(details.name)}; model ${details.model}; thinking ${details.thinking}; context ${details.context}; ${details.result ? `ended ${utc(details.result.endedAt)}` : "no result yet"}.`,
+    `Name ${details.name === undefined ? "(unnamed)" : JSON.stringify(details.name)}; model ${details.model}; thinking ${details.thinking}; context ${details.context}${details.readOnly === true ? "; read-only" : ""}; ${details.result ? `ended ${utc(details.result.endedAt)}` : "no result yet"}.`,
     `Cwd: ${details.cwd}`,
-    ...(details.scratchDir !== undefined ? [`Scratch directory: ${details.scratchDir}`] : []),
     `Owner ${details.owner}; root run ${details.rootId}; predecessor ${details.predecessor ?? "none"}; native session ${details.sessionId}.`,
   ].join("\n");
 }
+
 function receiptText(details: RunView): string {
   return details.nativeReceipt !== null
     ? `Native completion receipt: published (${details.nativeReceipt}); publication does not prove model consumption.`
     : "Native completion receipt: not observed published; queue admission is not publication or model consumption.";
 }
+
 function exitText(details: RunView): string {
   const { exit } = details.process;
   return exit
     ? `Process exit observed: code ${exit.code ?? "unknown"}, signal ${exit.signal ?? "none"}. Pid ${exit.pid} at ${utc(exit.at)}.`
     : "Process exit: unknown; run completion does not imply process exit.";
 }
+
 function waitingLines(waiting: Waiting | undefined): string[] {
   return waiting === undefined
     ? []
@@ -429,24 +398,17 @@ function waitingLines(waiting: Waiting | undefined): string[] {
         ...waiting.work.map((item) => `  ${item.id}: ${JSON.stringify(item.description)}`),
       ];
 }
+
 function escalationLines(escalation: Escalation | undefined): string[] {
   return escalation === undefined
     ? []
     : [
-        `Paused on overseer escalation (${pauseLabel(escalation)}) since ${utc(escalation.at)}.`,
-        ...escalationEvidenceLines(escalation),
+        `Paused on overseer checkpoint (${pauseLabel(escalation)}) since ${utc(escalation.at)}.`,
+        ...checkpointEvidenceLines(escalation),
         `Changed files: ${escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)"}`,
       ];
 }
-function reviewLine(details: RunView): string {
-  const prior =
-    details.review === undefined
-      ? ""
-      : `Overseer review: ${details.review.verdict} at ${utc(details.review.at)} - ${details.review.summary}`;
-  const pending =
-    details.reviewRequired === true ? "Overseer review: required before parent settles." : "";
-  return [prior, pending].filter(Boolean).join("\n");
-}
+
 function resultText(details: RunView, sectionLines: readonly string[]): string {
   const page = details.output;
   const suffix =
@@ -462,7 +424,6 @@ function resultText(details: RunView, sectionLines: readonly string[]): string {
     ...sectionLines,
     ...waitingLines(details.waiting),
     ...escalationLines(details.escalation),
-    reviewLine(details),
     receiptText(details),
     exitText(details),
     details.lastWakeFailure
@@ -476,6 +437,7 @@ function resultText(details: RunView, sectionLines: readonly string[]): string {
     `Output file: ${details.outputFile}`,
   ].join("\n");
 }
+
 export function renderInspection(
   base: string,
   launch: Launch,
@@ -483,15 +445,13 @@ export function renderInspection(
   input: Pick<RunsInput, "offset" | "length"> = {},
 ): ToolReply {
   const view = projection(base, launch, ctx, input);
-  const contract = inspectContract(base, launch, view.contract, utc);
   const judge = inspectJudgeCheckpoints(base, launch.id, utc);
   const details: RunView = {
     ...view,
-    ...(contract.amendments !== undefined ? { contractAmendments: contract.amendments } : {}),
     ...(judge.checkpoints !== undefined ? { judgeCheckpoints: judge.checkpoints } : {}),
   };
   return {
-    ...toolResult(details, resultText(details, [...contract.lines, ...judge.lines])),
+    ...toolResult(details, resultText(details, judge.lines)),
     isError: details.result?.status === "failed",
   };
 }

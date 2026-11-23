@@ -13,7 +13,7 @@ import {
   type IntercomToolParams,
   type ToolResultLike,
 } from "./runtime-types.ts";
-import type { Message, SessionInfo } from "./types.ts";
+import type { Message } from "./types.ts";
 import { formatAttachments } from "./message-format.ts";
 import { failureDetails, type SendProgress } from "./tool-results.ts";
 import {
@@ -27,22 +27,12 @@ import {
 } from "./outbound-results.ts";
 import type { DeviceTarget, RemoteDevices } from "./devices.ts";
 import { sendOptions, toolError, toolText } from "./tool-arguments.ts";
-import { formatAmendedSteerPrompt } from "../agent/overseer-contract.ts";
-import type {
-  ChildContractAmendmentResult,
-  ChildContractTarget,
-  ContractAmendmentInput,
-} from "../shared/child-contract.ts";
 
 type Lifecycle = Readonly<Pick<IntercomLifecycle, "markActivity">>;
 type Connection = Readonly<Pick<IntercomConnection, "syncStatus">>;
 type ReplyWaitHandle = Readonly<Pick<ReplyWait, "transact" | "waiting">>;
 type Replies = Readonly<Pick<ReplyTracker, "markReplied" | "resolveReplyTarget">>;
 type Devices = Readonly<Pick<RemoteDevices, "address" | "send" | "ask">>;
-type ContractAmender = (
-  target: ChildContractTarget,
-  contract: ContractAmendmentInput,
-) => Promise<ChildContractAmendmentResult>;
 
 interface OutboundOwners {
   readonly pi: ExtensionAPI;
@@ -51,7 +41,6 @@ interface OutboundOwners {
   readonly replies: Replies;
   readonly wait: ReplyWaitHandle;
   readonly devices: Devices;
-  readonly amendChildContract?: ContractAmender | undefined;
 }
 export class IntercomOutbound {
   private readonly owners: OutboundOwners;
@@ -319,41 +308,18 @@ export class IntercomOutbound {
       });
     }
   }
-  private async amendForReply(
-    from: Readonly<Pick<SessionInfo, "id" | "rootSessionId" | "parentSessionId">>,
-    contract: ContractAmendmentInput | undefined,
-  ): Promise<ChildContractAmendmentResult | undefined> {
-    if (contract === undefined) {
-      return undefined;
-    }
-    if (this.owners.amendChildContract === undefined) {
-      throw new Error("No agent runtime is available to amend a child delegation contract.");
-    }
-    return await this.owners.amendChildContract(
-      {
-        peerId: from.id,
-        rootSessionId: from.rootSessionId,
-        parentSessionId: from.parentSessionId,
-      },
-      contract,
-    );
-  }
   async reply(active: IntercomTransport, params: IntercomToolParams): Promise<ToolResultLike> {
-    const { to, replyTo, attachments, contract } = params;
-    const body = params.message ?? "";
-    if (body === "") {
+    const { to, replyTo, attachments } = params;
+    const text = params.message ?? "";
+    if (text === "") {
       return toolError("Missing 'message' parameter");
     }
     let progress: SendProgress = { kind: "not-sent" };
-    let amended: ChildContractAmendmentResult | undefined;
     try {
       const target = this.owners.replies.resolveReplyTarget({ to, replyTo });
       if (target.from.id === active.sessionId) {
         return toolError("Cannot message the current session");
       }
-      // Persist any contract amendment before sending so the waking child observes it immediately.
-      amended = await this.amendForReply(target.from, contract);
-      const text = amended === undefined ? body : formatAmendedSteerPrompt(body, amended.amendment);
       progress = { kind: "unconfirmed" };
       const result = await active.send(target.from.id, {
         text,
@@ -363,14 +329,14 @@ export class IntercomOutbound {
       progress = { kind: "acknowledged", result };
       const sender = target.from.name ?? target.from.id;
       if (!result.accepted) {
-        return replyDeliveryFailure(sender, target.message.id, result, amended);
+        return replyDeliveryFailure(sender, target.message.id, result);
       }
       this.owners.replies.markReplied(target.message.id);
       this.markActivity();
       this.recordSent(sender, { text, replyTo: target.message.id }, result);
-      return replySent(sender, target.message.id, result, amended);
+      return replySent(sender, target.message.id, result);
     } catch (error) {
-      return replyFailure(error, replyTo, progress, amended);
+      return replyFailure(error, replyTo, progress);
     }
   }
 }
