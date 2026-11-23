@@ -40,7 +40,7 @@ export default function fixture(pi: ExtensionAPI): void {
       if (hasMessage(context, "TOOL_ERROR_LOOP")) {
         return fauxAssistantMessage([fauxToolCall("bash", { command: "exit 1" }, { id: "err-1" })]);
       }
-      // First substantive edit: touch 2 files (triggers early shape_check) or write buggy interval.
+      // First working-tree edit triggers the one-time early shape_check pause.
       fs.writeFileSync(
         path.join(cwd, "src", "timer.ts"),
         "export const INTERVAL_MS = 5 * 60_000;\n",

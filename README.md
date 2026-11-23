@@ -53,8 +53,8 @@ When enabled:
   English (prefer isolated worktrees).
 - Editing children pause at natural checkpoints using a single delta watermark ("what changed
   since the parent last looked"):
-  1. **Early shape check:** once per editing run on the first substantive diff (`>= 40` diff lines
-     or `>= 2` files changed) so the parent can course-correct while pivots are cheap.
+  1. **Early shape check:** once per editing run on the first mutating turn that modifies the
+     working tree so the parent can course-correct while pivots are cheap.
   2. **Grounded skeptic (mid-flight):** a fast reasoning model (`claude-haiku-5-5` →
      `gpt-6-luna:medium` → `gemini-3.8-flash:medium` on `auto`, or any `provider/model[:thinking]`
      via `/overseer-judge`) scans new diffs against the owner's intent, child task, and guidance.

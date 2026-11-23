@@ -38,20 +38,28 @@ const legacyEscalationSchema = Type.Object({
   diffCommand: Type.Optional(Type.String()),
   steers: Type.Optional(Type.Integer({ minimum: 0 })),
   toolErrorTurns: Type.Optional(Type.Array(toolErrorTurnSchema)),
+  classifierReview: Type.Optional(Type.Unknown()),
 });
 
 const anyEscalationSchema = Type.Union([escalationSchema, legacyEscalationSchema]);
+
+function legacyKind(kind: string, classifierReview: unknown): Escalation["kind"] {
+  if (kind === "loop_violation") {
+    return "tool_errors";
+  }
+  return classifierReview !== undefined ? "skeptic" : "final_diff";
+}
 
 export function readEscalation(file: string): Escalation | undefined {
   const parsed = read(file, anyEscalationSchema);
   if (parsed === undefined || "pauseNumber" in parsed) {
     return parsed;
   }
-  const { strikes, kind, since, ...rest } = parsed;
+  const { strikes, kind, since, classifierReview, ...rest } = parsed;
   return {
     ...rest,
     pauseNumber: strikes,
-    kind: kind === "loop_violation" ? "tool_errors" : "skeptic",
+    kind: legacyKind(kind, classifierReview),
     since: since === "approval" ? "checkpoint" : "launch",
   };
 }

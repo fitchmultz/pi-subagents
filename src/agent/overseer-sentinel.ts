@@ -239,6 +239,24 @@ export class OverseerSentinel {
     return answer;
   }
 
+  private advanceWatermark(launch: Launch, snapshot: TreeSnapshot, kind: CheckpointKind): void {
+    const current = this.state;
+    if (current === undefined) {
+      return;
+    }
+    const lostGit = current.lastSeen.isGit && !snapshot.isGit;
+    const next =
+      snapshot.unreadable || lostGit ? captureSnapshot(launch.cwd, current.excludePaths) : snapshot;
+    if (!next.unreadable && (!current.lastSeen.isGit || next.isGit)) {
+      current.lastSeen = next;
+      current.lastSkeptic = { tree: next.tree, lines: 0 };
+    }
+    current.hasSeenCheckpoint = true;
+    if (kind !== "tool_errors") {
+      current.shapeChecked = true;
+    }
+  }
+
   private applyAnswer(
     launch: Launch,
     snapshot: TreeSnapshot,
@@ -256,13 +274,8 @@ export class OverseerSentinel {
       current.lastSkeptic = { tree: undefined, lines: 0 };
       return;
     }
-    // Parent reviewed this state (approved or steered): advance watermark so future notices show only new changes.
-    current.lastSeen = snapshot;
-    current.hasSeenCheckpoint = true;
-    current.lastSkeptic = { tree: snapshot.tree, lines: 0 };
-    if (kind === "shape_check" || kind === "final_diff" || kind === "skeptic") {
-      current.shapeChecked = true;
-    }
+    // Parent reviewed this state: advance watermark to a readable snapshot without poisoning lastSeen.
+    this.advanceWatermark(launch, snapshot, kind);
     clearJudgeUnavailable(this.options.base, launch.id);
     if (answer.commands.length > 0) {
       current.steers += 1;

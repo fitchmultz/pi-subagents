@@ -164,7 +164,14 @@ function countDiffLines(diff: string): number {
 }
 
 function isUnreadableDelta(from: TreeSnapshot, to: TreeSnapshot): boolean {
-  return from.unreadable || to.unreadable || from.tree === undefined || to.tree === undefined;
+  return (
+    !from.isGit ||
+    !to.isGit ||
+    from.unreadable ||
+    to.unreadable ||
+    from.tree === undefined ||
+    to.tree === undefined
+  );
 }
 
 function runTreeDiff(input: {
@@ -197,7 +204,7 @@ export function diffSnapshots(
   to: TreeSnapshot,
   excerptLimit: number,
 ): TreeDelta {
-  if (!from.isGit || !to.isGit) {
+  if (!from.isGit && !to.isGit) {
     return EMPTY_DELTA;
   }
   if (isUnreadableDelta(from, to)) {

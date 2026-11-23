@@ -14,6 +14,7 @@ import {
   type Escalation,
   type Launch,
 } from "../../src/agent/contracts.ts";
+import { notifications } from "../../src/agent/notifications.ts";
 import {
   captureSnapshot,
   diffSnapshots,
@@ -729,31 +730,112 @@ nodeDescribe("overseer sentinel checkpoints", () => {
     },
   );
 
-  nodeIt("normalizes legacy pre-V2 escalation payloads without throwing across upgrades", (t) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-legacy-esc-"));
-    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-    const file = path.join(dir, "escalation.json");
-    fs.writeFileSync(
-      file,
-      JSON.stringify({
-        id: "esc-legacy-1",
-        runId: "run-old",
-        owner: "owner-1",
-        at: 123,
-        strikes: 2,
-        kind: "scope_violation",
-        summary: "Edited README.md outside scope",
-        changedFiles: ["README.md"],
-        diffExcerpt: "+change",
-        diffDigest: "abc123",
-        since: "approval",
-      }),
-    );
-    const parsed = readEscalation(file);
-    assert.ok(parsed !== undefined);
-    assert.equal(parsed.pauseNumber, 2);
-    assert.equal(parsed.kind, "skeptic");
-    assert.equal(parsed.since, "checkpoint");
-    assert.deepEqual(parsed.changedFiles, ["README.md"]);
-  });
+  nodeIt(
+    "recovers after a transient unreadable captureSnapshot without poisoning lastSeen",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-transient-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      const launch = makeLaunch(base, repo, { overseer: { enabled: true, judge: "off" } });
+      let stopping = false;
+      t.after(() => {
+        stopping = true;
+      });
+      const sentinel = new OverseerSentinel({
+        base,
+        activeLaunch: () => launch,
+        activeRunBaseline: () => new Set<string>(),
+        isStopping: () => stopping,
+        queueCorrections: () => {
+          throw new Error("no corrections expected");
+        },
+      });
+      const native = await createNativeSessionFixture({
+        cwd: repo,
+        agentDir: base,
+        configure: (pi) => {
+          sentinel.attach(pi);
+        },
+      });
+      t.after(async () => {
+        await native.dispose();
+      });
+
+      const beforeSettle = native.extensions[0]?.handlers.get("agent_before_settle")?.[0];
+      assert.ok(beforeSettle !== undefined);
+
+      // Force a single transient write-tree failure via GIT_OBJECT_DIRECTORY pointing at a file.
+      const blocker = path.join(base, "not-a-dir");
+      fs.writeFileSync(blocker, "block");
+      const prevObjDir = process.env.GIT_OBJECT_DIRECTORY;
+      process.env.GIT_OBJECT_DIRECTORY = blocker;
+      t.after(() => {
+        if (prevObjDir === undefined) {
+          delete process.env.GIT_OBJECT_DIRECTORY;
+        } else {
+          process.env.GIT_OBJECT_DIRECTORY = prevObjDir;
+        }
+      });
+
+      fs.writeFileSync(path.join(repo, "src", "app.ts"), "export const a = 99;\n");
+      const settlePromise = Promise.resolve(beforeSettle(settleEvent, native.context));
+      const escFile = path.join(runDirectory(base, launch.id), "escalation.json");
+      const esc = await waitForEscalation(escFile);
+      assert.equal(esc.kind, "final_diff");
+      assert.deepEqual(esc.changedFiles, [UNREADABLE_DIFF_MARKER]);
+
+      // Restore git before parent approves; applyAnswer re-captures a readable watermark.
+      if (prevObjDir === undefined) {
+        delete process.env.GIT_OBJECT_DIRECTORY;
+      } else {
+        process.env.GIT_OBJECT_DIRECTORY = prevObjDir;
+      }
+      resolveActiveEscalation(base, launch, "approved");
+      assert.equal(await settlePromise, undefined);
+      assert.equal(await beforeSettle(settleEvent, native.context), undefined);
+    },
+  );
+
+  nodeIt(
+    "normalizes legacy pre-V2 escalation payloads without suppressing structural pauses when judge is off",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-legacy-esc-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      const launch = makeLaunch(base, repo, { overseer: { enabled: true, judge: "off" } });
+      const dir = runDirectory(base, launch.id);
+      fs.writeFileSync(path.join(dir, "launch.json"), JSON.stringify(launch));
+      const file = path.join(dir, "escalation.json");
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          id: "esc-legacy-1",
+          runId: launch.id,
+          owner: launch.owner,
+          at: 123,
+          strikes: 2,
+          kind: "scope_violation",
+          summary: "Edited README.md outside scope",
+          changedFiles: ["README.md"],
+          diffExcerpt: "+change",
+          diffDigest: "abc123",
+          since: "approval",
+        }),
+      );
+      const parsed = readEscalation(file);
+      assert.ok(parsed !== undefined);
+      assert.equal(parsed.pauseNumber, 2);
+      assert.equal(parsed.kind, "final_diff");
+      assert.equal(parsed.since, "checkpoint");
+      assert.deepEqual(parsed.changedFiles, ["README.md"]);
+
+      const native = await createNativeSessionFixture({ cwd: repo, agentDir: base });
+      t.after(async () => {
+        await native.dispose();
+      });
+      const rec = notifications(native.context, base, launch.owner);
+      assert.equal(rec.notices.length, 1);
+      assert.equal(rec.notices[0]?.message.customType, "agent-escalation");
+    },
+  );
 });
