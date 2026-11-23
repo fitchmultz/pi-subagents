@@ -519,10 +519,10 @@ With `/overseer-judge auto`, the skeptic tries available chat models via Pi's na
 2. `cloudflare-ai-gateway/gpt-6-luna:medium` → `openai/gpt-6-luna:medium`
 3. `google/gemini-3.8-flash:medium`
 
-With an explicit `provider/model[:thinking]` spec, it asks only that model. The request exposes a
-`report_findings` tool validated with `pi-ai`'s `validateToolCall` (falling back to structured JSON
-text if the model answers in text) and sizes the diff from the model's declared `contextWindow`,
-marking any truncation both in the prompt and on the recorded checkpoint.
+With an explicit `provider/model[:thinking]` spec, it asks only that model. The request passes the
+full diff (never silently sliced client-side; provider context-limit errors fall back across `auto`
+candidates or record `judge-unavailable.json`) and exposes a `report_findings` tool validated with
+`pi-ai`'s `validateToolCall` (falling back to structured JSON text if the model answers in text).
 `validateGroundedFindings` verifies in code that each finding's `file` is in the changed diff and
 its literal `excerpt` (>= 6 chars) appears verbatim inside that file's diff hunks; any ungrounded
 finding is dropped automatically so content-free pauses cannot happen.

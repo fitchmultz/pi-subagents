@@ -130,7 +130,6 @@ function formatCheckpointEntry(entry: JudgeCheckpoint): string {
     entry.blockingCount > 0 ? `${entry.blockingCount} blocking` : "",
     entry.noteCount > 0 ? `${entry.noteCount} note` : "",
     entry.droppedUngrounded > 0 ? `${entry.droppedUngrounded} ungrounded dropped` : "",
-    entry.truncated === true ? "diff truncated to model context window" : "",
   ]
     .filter(Boolean)
     .join(", ");

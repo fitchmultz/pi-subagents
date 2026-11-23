@@ -25,7 +25,6 @@ import {
   inspectJudgeCheckpoints,
   judgeUnavailable,
   readJudgeCheckpoints,
-  recordJudgeCheckpoint,
 } from "../../src/agent/overseer-evidence.ts";
 import { readEscalation, resolveActiveEscalation } from "../../src/agent/overseer-pause.ts";
 import {
@@ -364,22 +363,18 @@ nodeDescribe("overseer-skeptic grounding and fallback", () => {
   );
 
   nodeIt(
-    "validates report_findings tool calls via pi-ai and flags model-context-window diff truncation",
+    "validates report_findings tool calls via pi-ai and sends the full diff without client-side slicing",
     async (t) => {
       const repo = initGitRepo(t);
       const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-tool-"));
       t.after(() => fs.rmSync(base, { recursive: true, force: true }));
       const launch = makeLaunch(base, repo);
 
-      // Small contextWindow forces truncation with an explicit marker in prompt & checkpoint.
-      const smallModel: Model<Api> = {
-        ...makeModel("cloudflare-ai-gateway", "claude-haiku-5-5", false),
-        contextWindow: 4_096,
-        maxTokens: 2_048,
-      };
+      const model = makeModel("cloudflare-ai-gateway", "claude-haiku-5-5", false);
       let capturedPrompt = "";
-      const bigDiff = `${sampleDiff}\n+${"x".repeat(10_000)}\n`;
-      const registry = makeStreamRegistry([smallModel], async (_model, prompt) => {
+      const tailMarker = "+export const tailSentinel = true;";
+      const bigDiff = `${sampleDiff}\n+${"x".repeat(30_000)}\n${tailMarker}\n`;
+      const registry = makeStreamRegistry([model], async (_model, prompt) => {
         capturedPrompt = prompt;
         return {
           ...fakeAssistant(""),
@@ -419,13 +414,7 @@ nodeDescribe("overseer-skeptic grounding and fallback", () => {
       });
       assert.equal(outcome.kind, "verdict");
       assert.equal(outcome.verdict.blocking.length, 1);
-      assert.equal(outcome.verdict.truncated, true);
-      assert.equal(outcome.checkpoint.truncated, true);
-      assert.match(capturedPrompt, /diff truncated at \d+ of \d+ chars/u);
-
-      recordJudgeCheckpoint(base, launch.id, outcome.checkpoint);
-      const inspected = inspectJudgeCheckpoints(base, launch.id, (n) => String(n));
-      assert.match(inspected.lines[1] ?? "", /diff truncated to model context window/u);
+      assert.ok(capturedPrompt.includes(tailMarker));
     },
   );
 });
