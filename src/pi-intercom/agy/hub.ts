@@ -6,20 +6,42 @@ import { toolError } from "../tool-arguments.ts";
 import { isRecord, isUnknownArray } from "../validation.ts";
 import { inspectConversationLineage } from "./delivery.ts";
 import {
-  agyConversationIndexPath,
   agyWakeDir,
-  agyWakeFilePath,
+  captureEndpointIdentity,
+  isOwnedEndpointCurrent,
   isValidConversationId,
   prepareAgyControlSocketPath,
   preparePrivateDir,
   readWakeCredentials,
-  removeFileQuietly,
+  removeOwnedEndpoint,
   writeConversationIndex,
+  type OwnedEndpoint,
 } from "./paths.ts";
 import { AgyPeer, type AgyHookInput, type AgyHookResponse } from "./peer.ts";
 
 const MAX_CONTROL_LINE_BYTES = 256 * 1024;
+const SOCKET_PROBE_TIMEOUT_MS = 250;
 const SUBAGENT_TRIGGER_TOOLS = new Set(["invoke_subagent", "swarm", "run_workflow"]);
+
+function isControlSocketLive(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (live: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(live);
+    };
+    const socket = net.createConnection(socketPath);
+    const timer = setTimeout(() => finish(true), SOCKET_PROBE_TIMEOUT_MS);
+    timer.unref();
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
+}
 
 export interface AgyToolCallContext {
   readonly conversationId?: string | undefined;
@@ -104,10 +126,10 @@ export class AgyBridgeHub {
   private readonly config: IntercomConfig;
   private readonly peers = new Map<string, AgyPeer>();
   private readonly subagentIds = new Set<string>();
-  private readonly ownedIndexFiles = new Set<string>();
-  private readonly ownedWakeFiles = new Set<string>();
+  private readonly ownedIndexFiles = new Map<string, OwnedEndpoint>();
   private activeMainId: string | null = null;
   private server: net.Server | null = null;
+  private ownedSocket: OwnedEndpoint | null = null;
   private socketPath: string | null = null;
   private closed = false;
 
@@ -125,23 +147,38 @@ export class AgyBridgeHub {
     return this.socketPath;
   }
 
-  async start(): Promise<string> {
+  async start(): Promise<string | null> {
     preparePrivateDir(agyWakeDir());
     const socketPath = prepareAgyControlSocketPath(this.lsPid);
-    removeFileQuietly(socketPath);
+    const existing = captureEndpointIdentity(socketPath);
+    if (existing) {
+      if (await isControlSocketLive(socketPath)) {
+        return null;
+      }
+      removeOwnedEndpoint(existing);
+    }
     const server = net.createServer((socket) => this.handleControlConnection(socket));
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(socketPath, () => {
-        try {
-          fs.chmodSync(socketPath, 0o600);
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, () => {
+          try {
+            fs.chmodSync(socketPath, 0o600);
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        });
       });
-    });
+    } catch (error) {
+      server.close();
+      if (await isControlSocketLive(socketPath)) {
+        return null;
+      }
+      throw error;
+    }
     this.server = server;
+    this.ownedSocket = captureEndpointIdentity(socketPath) ?? null;
     this.socketPath = socketPath;
     return socketPath;
   }
@@ -237,11 +274,29 @@ export class AgyBridgeHub {
     if (this.activeMainId === conversationId) {
       this.activeMainId = null;
     }
-    removeFileQuietly(agyConversationIndexPath(conversationId));
-    this.ownedIndexFiles.delete(agyConversationIndexPath(conversationId));
+    removeOwnedEndpoint(this.ownedIndexFiles.get(conversationId));
+    this.ownedIndexFiles.delete(conversationId);
     void existing.close().catch(() => {
       // Ignore cleanup errors for retired peers.
     });
+  }
+
+  private publishIndex(conversationId: string): void {
+    if (this.socketPath === null) {
+      return;
+    }
+    try {
+      const indexEndpoint = writeConversationIndex(conversationId, {
+        socketPath: this.socketPath,
+        lsPid: this.lsPid,
+        mcpPid: process.pid,
+      });
+      if (indexEndpoint) {
+        this.ownedIndexFiles.set(conversationId, indexEndpoint);
+      }
+    } catch {
+      // Title index is best-effort.
+    }
   }
 
   private ensureMainPeer(
@@ -271,19 +326,7 @@ export class AgyBridgeHub {
     });
     this.peers.set(conversationId, peer);
     this.activeMainId = conversationId;
-    this.ownedWakeFiles.add(agyWakeFilePath(conversationId));
-    if (this.socketPath !== null) {
-      try {
-        const indexPath = writeConversationIndex(conversationId, {
-          socketPath: this.socketPath,
-          lsPid: this.lsPid,
-          mcpPid: process.pid,
-        });
-        this.ownedIndexFiles.add(indexPath);
-      } catch {
-        // Title index is best-effort.
-      }
-    }
+    this.publishIndex(conversationId);
     peer.start();
     return peer;
   }
@@ -370,23 +413,26 @@ export class AgyBridgeHub {
     this.peers.clear();
     this.activeMainId = null;
     await Promise.allSettled(peers.map((peer) => peer.close()));
-    if (this.server) {
-      await new Promise<void>((resolve) => {
-        this.server?.close(() => resolve());
-      });
-      this.server = null;
+    const server = this.server;
+    const ownedSocket = this.ownedSocket;
+    this.server = null;
+    this.ownedSocket = null;
+    this.socketPath = null;
+    if (server) {
+      if (isOwnedEndpointCurrent(ownedSocket ?? undefined)) {
+        removeOwnedEndpoint(ownedSocket ?? undefined);
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        });
+      } else {
+        // Unref instead of server.close(): Node's net.Server.close() unlinks Unix socket paths by name,
+        // which would delete a successor server's socket inode.
+        server.unref();
+      }
     }
-    if (this.socketPath !== null) {
-      removeFileQuietly(this.socketPath);
-      this.socketPath = null;
-    }
-    for (const file of this.ownedIndexFiles) {
-      removeFileQuietly(file);
+    for (const endpoint of this.ownedIndexFiles.values()) {
+      removeOwnedEndpoint(endpoint);
     }
     this.ownedIndexFiles.clear();
-    for (const file of this.ownedWakeFiles) {
-      removeFileQuietly(file);
-    }
-    this.ownedWakeFiles.clear();
   }
 }

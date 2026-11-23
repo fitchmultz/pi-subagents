@@ -11,11 +11,13 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { test as nodeTest, type TestContext } from "node:test";
 import { promisify } from "node:util";
+import { AgyBridgeHub } from "../../src/pi-intercom/agy/hub.ts";
 import { agyPeerId, agyWakeDir, agyWakeFilePath } from "../../src/pi-intercom/agy/paths.ts";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import { agyControlSocketPath } from "../../src/pi-intercom/broker/paths.ts";
@@ -366,12 +368,63 @@ nodeTest(
     assert.equal(record(subagentResp.result).isError, true);
     assert.match(mcpText(subagentResp), /only to main agy sessions/);
 
-    // 8. Closing MCP server unregisters agy from broker and cleans up runtime files.
+    // 8. Closing MCP server unregisters agy, removes its socket, and preserves shell-owned wake file.
     await mcp.close();
     await waitFor(async () =>
       (await piPeer.listSessions()).some((session) => session.id === peerId) ? undefined : true,
     );
     assert.equal(existsSync(agyControlSocketPath(process.pid)), false);
-    assert.equal(existsSync(wakePath), false);
+    assert.equal(existsSync(wakePath), true);
+  },
+);
+
+nodeTest(
+  "AgyBridgeHub preserves an existing live control socket and only unlinks its own socket inode",
+  async (t) => {
+    isolatedAgent(t);
+    const sharedLsPid = process.pid + 100_000;
+    const hubA = new AgyBridgeHub(sharedLsPid);
+    const hubB = new AgyBridgeHub(sharedLsPid);
+    t.after(async () => {
+      await hubB.close();
+      await hubA.close();
+    });
+
+    const socketA = await hubA.start();
+    assert.equal(socketA, agyControlSocketPath(sharedLsPid));
+
+    // A second hub for the same Language Server must not steal or unlink the live socket.
+    const socketB = await hubB.start();
+    assert.equal(socketB, null);
+    assert.equal(hubB.controlSocketPath, null);
+    await hubB.close();
+
+    // Hub A's control socket remains live and reachable after Hub B closes.
+    assert.equal(existsSync(agyControlSocketPath(sharedLsPid)), true);
+    const probe = net.createConnection(agyControlSocketPath(sharedLsPid));
+    t.after(() => probe.destroy());
+    await once(probe, "connect");
+    probe.end();
+
+    // If a successor binds a fresh inode at the path after an external replace, Hub A's close must not remove it.
+    const successor = net.createServer();
+    t.after(
+      () =>
+        new Promise<void>((resolve) => {
+          successor.close(() => resolve());
+        }),
+    );
+    rmSync(agyControlSocketPath(sharedLsPid), { force: true });
+    await new Promise<void>((resolve, reject) => {
+      successor.once("error", reject);
+      successor.listen(agyControlSocketPath(sharedLsPid), () => resolve());
+    });
+
+    await hubA.close();
+    assert.equal(existsSync(agyControlSocketPath(sharedLsPid)), true);
+    const probeSuccessor = net.createConnection(agyControlSocketPath(sharedLsPid));
+    t.after(() => probeSuccessor.destroy());
+    await once(probeSuccessor, "connect");
+    probeSuccessor.end();
   },
 );

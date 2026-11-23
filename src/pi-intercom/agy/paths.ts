@@ -20,6 +20,12 @@ export interface AgyConversationIndex {
   readonly mcpPid: number;
 }
 
+export interface OwnedEndpoint {
+  readonly path: string;
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
 export interface AgentApiInvocation {
   readonly command: string;
   readonly prefixArgs: readonly string[];
@@ -129,24 +135,52 @@ export function readWakeCredentials(conversationId: string): AgyWakeCredentials 
   }
 }
 
-export function removeFileQuietly(filePath: string): void {
+export function captureEndpointIdentity(filePath: string): OwnedEndpoint | undefined {
   try {
-    fs.unlinkSync(filePath);
+    const stat = fs.lstatSync(filePath, { bigint: true, throwIfNoEntry: false });
+    if (!stat) {
+      return;
+    }
+    return { path: filePath, dev: stat.dev, ino: stat.ino };
   } catch {
-    // Missing or already cleaned up.
+    return;
+  }
+}
+
+export function isOwnedEndpointCurrent(owned: OwnedEndpoint | undefined): boolean {
+  if (!owned) {
+    return false;
+  }
+  try {
+    const current = fs.lstatSync(owned.path, { bigint: true, throwIfNoEntry: false });
+    return current?.dev === owned.dev && current.ino === owned.ino;
+  } catch {
+    return false;
+  }
+}
+
+export function removeOwnedEndpoint(owned: OwnedEndpoint | undefined): void {
+  if (!owned || !isOwnedEndpointCurrent(owned)) {
+    return;
+  }
+  try {
+    fs.unlinkSync(owned.path);
+  } catch {
+    // A missing or unreadable endpoint is not ours to remove.
   }
 }
 
 export function writeConversationIndex(
   conversationId: string,
   entry: AgyConversationIndex,
-): string {
+): OwnedEndpoint | undefined {
   const dir = preparePrivateDir(agyStateDir());
   const target = agyConversationIndexPath(conversationId);
   const tmp = join(dir, `.conv-${conversationId}.${process.pid}.tmp`);
   fs.writeFileSync(tmp, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+  const identity = captureEndpointIdentity(tmp);
   fs.renameSync(tmp, target);
-  return target;
+  return identity ? { path: target, dev: identity.dev, ino: identity.ino } : undefined;
 }
 
 export function readConversationIndex(conversationId: string): AgyConversationIndex | undefined {

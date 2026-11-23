@@ -749,13 +749,17 @@ delegation to `agy`.
   `-agy` sibling of the Intercom runtime directory) to auto-register on
   `SessionStart`, keep presence updated (`working` / `idle`), drain fallback
   queued messages on `PreInvocation`/`PostInvocation`/`Stop`, and skip internal
-  `agy` subagents.
+  `agy` subagents. Control sockets and conversation index files are
+  inode-owned: startup never steals a live owner's socket, and shutdown removes
+  only the exact `(dev, ino)` it created.
 - **Inbound wake (`agentapi`)**: When a wake environment file exists at
   `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/agy-wake/<conversationId>.env`
   (containing loopback `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`, and
   optional `ANTIGRAVITY_AGENTAPI_EXE` from a shell `run_command`), inbound
   `send` and `ask` messages call `agentapi send-message` to wake idle `agy`
-  sessions and steer active ones at the next tool boundary. Without wake
+  sessions and steer active ones at the next tool boundary. The wake file is
+  owned by the shell session, not the MCP server, so MCP restarts leave live
+  wake credentials intact. Without wake
   credentials, active turns still receive messages via hooks, and an `ask`
   sent to an idle unwakeable session fast-fails with
   `pi-intercom-recipient-turn-failure` instead of hanging until timeout.
