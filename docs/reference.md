@@ -522,7 +522,7 @@ With `/overseer-judge auto`, the skeptic tries available chat models via Pi's na
 With an explicit `provider/model[:thinking]` spec, it asks only that model. The request passes the
 full diff (never silently sliced client-side; provider context-limit errors fall back across `auto`
 candidates or record `judge-unavailable.json`) and exposes a `report_findings` tool validated with
-`pi-ai`'s `validateToolCall` (falling back to structured JSON text if the model answers in text).
+`@earendil-works/pi-schema` (falling back to structured JSON text if the model answers in text).
 `validateGroundedFindings` verifies in code that each finding's `file` is in the changed diff and
 its literal `excerpt` (>= 6 chars) appears verbatim inside that file's diff hunks; any ungrounded
 finding is dropped automatically so content-free pauses cannot happen.

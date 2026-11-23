@@ -1,12 +1,11 @@
-import {
-  validateToolCall,
-  type Api,
-  type AssistantMessage,
-  type Context,
-  type Model,
-  type ModelsSimpleStreamOptions,
-  type ThinkingLevel,
-  type Tool,
+import type {
+  Api,
+  AssistantMessage,
+  Context,
+  Model,
+  ModelsSimpleStreamOptions,
+  ThinkingLevel,
+  Tool,
 } from "@earendil-works/pi-ai";
 import { compile } from "@earendil-works/pi-schema";
 import {
@@ -288,12 +287,13 @@ function extractSkepticPayload(
   | { readonly ok: false; readonly reason: string } {
   for (const block of message.content) {
     if (block.type === "toolCall" && block.name === REPORT_FINDINGS_TOOL.name) {
-      try {
-        const validated: unknown = validateToolCall([REPORT_FINDINGS_TOOL], block);
-        return { ok: true, payload: validated };
-      } catch (error) {
-        return { ok: false, reason: nonEmpty(errorText(error), "invalid report_findings call") };
+      if (block.argumentsError !== undefined) {
+        return {
+          ok: false,
+          reason: nonEmpty(block.argumentsError, "invalid report_findings call"),
+        };
       }
+      return { ok: true, payload: block.arguments };
     }
   }
   return { ok: true, payload: assistantText(message) };
