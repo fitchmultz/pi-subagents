@@ -63,6 +63,12 @@ When enabled:
      Blocking findings pause the child; non-blocking findings send a quiet FYI note while it runs.
   3. **Pre-ship final diff check:** right before settling, if changes remain since the parent's
      last checkpoint, the child pauses so the parent sees the final diff before completion.
+- **Parent-side skeptic (main session):** before `delegate`, `agent_runs({ action: "continue", prompt })`,
+  or high-impact shell commands (`gh pr merge`, `git push`, `git reset --hard`, `git clean -f`,
+  `git branch -D`, `npm`/`pnpm`/`yarn publish`, `wrangler deploy`, `chezmoi apply`), the skeptic
+  checks the proposed action against your messages in the session. Blocking findings must quote
+  both your exact instruction and the offending text in the proposed action; non-blocking findings
+  send a quiet FYI note without blocking.
 - Answer any pause with `agent_runs({ action: "continue", id })` (omit `prompt` to approve and
   resume, or pass `prompt` to steer with corrections) or `agent_runs({ action: "stop", id })`.
 

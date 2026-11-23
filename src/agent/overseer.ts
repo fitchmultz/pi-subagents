@@ -57,6 +57,7 @@ export function activeOverseer(base: string, launch: Pick<Launch, "overseer">): 
 const PROMPT_SECTION = [
   "Overseer mode is active. Discuss architecture, verify existing language and package primitives before delegating, and keep direct edits to small scripts or surgical fixes.",
   "Pass `readOnly: true` for research, audit, or review children; editing children work freely in plain English without rigid file-glob contracts (prefer isolated worktrees).",
+  "Before delegating, steering a child, or running high-impact shell commands (PR merges, pushes, publishes, deploys, destructive git), the parent skeptic checks the action against the owner's messages and blocks grounded contradictions.",
   'Children pause at natural checkpoints (early shape check, grounded skeptic findings with quoted hunks, tool-error loops, and pre-ship final diff). Answer pauses with `agent_runs` `action="continue"` (omit `prompt` to approve and resume, or include `prompt` to steer with corrections) or `action="stop"`.',
 ].join("\n");
 

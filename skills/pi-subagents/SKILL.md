@@ -33,7 +33,10 @@ are not OS-sandboxed). When `/overseer` mode is active, no delegation contract i
 required: editing children work freely in plain English (prefer isolated worktrees),
 pause at natural checkpoints (early shape check, grounded skeptic findings with quoted
 hunks, tool-error loops, and pre-ship final diff), and send non-blocking heads-up notes
-for minor smells. Omitted `model` and `thinking` follow normal `delegate` inheritance
+for minor smells. On the main session, the same grounded skeptic also checks `delegate`,
+steering prompts, and high-impact shell commands (PR merges, pushes, publishes, deploys,
+destructive git) against owner messages before execution, blocking only when it quotes
+both the owner's instruction and the offending action verbatim. Omitted `model` and `thinking` follow normal `delegate` inheritance
 unless `/overseer-model` (or `subagents.overseer.model`) configures a default child model.
 Pi clamps the child's effort to its model capabilities without changing the parent.
 `model:"provider/model:thinking"` uses Pi's native suffix resolver when the host
