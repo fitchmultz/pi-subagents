@@ -119,12 +119,13 @@ async function startMcpServer(t: TestContext): Promise<McpHarness> {
   };
   t.after(close);
 
-  // Wait until the control socket is published and MCP initialize responds.
-  await call("initialize", {
-    protocolVersion: "2024-11-05",
+  // Wait until the control socket is published and MCP initialize negotiates protocol version.
+  const initResp = await call("initialize", {
+    protocolVersion: "2025-11-25",
     capabilities: {},
     clientInfo: { name: "test", version: "1.0" },
   });
+  assert.equal(record(initResp.result).protocolVersion, "2025-11-25");
   await waitFor(() => (existsSync(agyControlSocketPath(process.pid)) ? true : undefined));
   return { proc, call, close };
 }
@@ -356,7 +357,23 @@ nodeTest(
     const receivedReply = await waitFor(() => replies.find((msg) => msg.replyTo === askSend.id));
     assert.equal(receivedReply.content.text, "Token rotation looks good.");
 
-    // 7. Subagent MCP calls are rejected cleanly without registering a peer.
+    // 7. Malformed attachments fail validation instead of silently dropping entries, and subagents are rejected.
+    const badAttachResp = await mcp.call("tools/call", {
+      name: "intercom",
+      arguments: {
+        action: "send",
+        to: "pi-coordinator",
+        message: "hi",
+        attachments: [{ type: "bogus", name: "a.txt", content: "x" }],
+      },
+      _meta: {
+        "antigravity.google/conversation_id": convId,
+        "antigravity.google/root_conversation_id": convId,
+      },
+    });
+    assert.equal(record(badAttachResp.result).isError, true);
+    assert.match(mcpText(badAttachResp), /Invalid intercom tool arguments/);
+
     const subagentResp = await mcp.call("tools/call", {
       name: "intercom",
       arguments: { action: "list" },

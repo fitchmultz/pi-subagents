@@ -1,94 +1,63 @@
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
+import { arr, bool, compile, int, lit, obj, opt, str, union } from "@earendil-works/pi-schema";
 import type { IntercomToolParams } from "../runtime-types.ts";
-import type { Attachment } from "../types.ts";
-import { errorMessage, isRecord, isUnknownArray } from "../validation.ts";
+import { errorMessage, isRecord } from "../validation.ts";
 import { AgyBridgeHub, type AgyToolCallContext } from "./hub.ts";
 
-const MCP_PROTOCOL_VERSION = "2024-11-05";
+const SUPPORTED_MCP_PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"] as const;
+const DEFAULT_MCP_PROTOCOL = SUPPORTED_MCP_PROTOCOLS[0];
 const SERVER_NAME = "pi-intercom";
 
-const VALID_ACTIONS: readonly IntercomToolParams["action"][] = [
-  "list",
-  "send",
-  "ask",
-  "reply",
-  "pending",
-  "status",
-  "last",
-  "claim",
-];
+export const AGY_INTERCOM_INPUT_SCHEMA = obj({
+  action: union([
+    lit("list"),
+    lit("send"),
+    lit("ask"),
+    lit("reply"),
+    lit("pending"),
+    lit("status"),
+    lit("last"),
+    lit("claim"),
+  ]),
+  scope: opt(
+    union([lit("project"), lit("all")], {
+      description: "all (default) or project (repo and worktrees)",
+    }),
+  ),
+  children: opt(bool({ description: "list: print child rows instead of a count" })),
+  device: opt(str({ description: "list: mains on another device (alias) or all" })),
+  to: opt(str({ description: "Session name or ID" })),
+  message: opt(
+    str({
+      description:
+        "Text for send/ask/reply, or workingOn note for claim (one line, max 256 UTF-16 code units after normalization; empty clears)",
+    }),
+  ),
+  attachments: opt(
+    arr(
+      obj({
+        type: union([lit("file"), lit("snippet"), lit("context")]),
+        name: str(),
+        content: str(),
+        language: opt(str()),
+      }),
+    ),
+  ),
+  replyTo: opt(str({ description: "Message ID to answer or thread" })),
+  entryId: opt(str()),
+  offset: opt(int({ minimum: 0, description: "UTF-16 characters" })),
+  limit: opt(int({ minimum: 1, maximum: 16384 })),
+});
+
+const intercomValidator = compile(AGY_INTERCOM_INPUT_SCHEMA);
 
 const INTERCOM_TOOL_DEFINITION = {
   name: "intercom",
   description:
     "Communicate with other local or cross-device Pi and Antigravity (agy) agent sessions on pi-intercom. Actions: list, status, pending, send (fire-and-forget), ask (send and wait for correlated reply), reply (answer a pending ask), last (read a peer's latest completed response without waking it), claim (publish or clear your workingOn summary).",
-  inputSchema: {
-    type: "object",
-    properties: {
-      action: {
-        type: "string",
-        enum: ["list", "status", "pending", "send", "ask", "reply", "last", "claim"],
-        description: "Intercom action to perform.",
-      },
-      to: {
-        type: "string",
-        description:
-          "Target peer name, session ID, or name@device (for send/ask/last/reply), or name/ID filter substring (for list).",
-      },
-      message: {
-        type: "string",
-        description:
-          "Message text (for send/ask/reply) or short workingOn summary (for claim; empty string clears).",
-      },
-      replyTo: {
-        type: "string",
-        description: "Incoming message ID to correlate a reply with.",
-      },
-      scope: {
-        type: "string",
-        enum: ["project", "all"],
-        description: "Session scope for list/status (default: all).",
-      },
-      children: {
-        type: "boolean",
-        description: "Include child session rows when listing (default: false).",
-      },
-      device: {
-        type: "string",
-        description:
-          'List main sessions on another configured device alias, or "all" for every configured device.',
-      },
-      entryId: {
-        type: "string",
-        description: "Specific response entry ID to paginate with action='last'.",
-      },
-      offset: {
-        type: "number",
-        description: "UTF-16 character offset for action='last' pagination.",
-      },
-      limit: {
-        type: "number",
-        description: "Maximum UTF-16 characters to return for action='last' (1-16384).",
-      },
-      attachments: {
-        type: "array",
-        description: "Optional context/file/snippet attachments for send/ask/reply.",
-        items: {
-          type: "object",
-          properties: {
-            type: { type: "string", enum: ["file", "snippet", "context"] },
-            name: { type: "string" },
-            content: { type: "string" },
-            language: { type: "string" },
-          },
-          required: ["type", "name", "content"],
-        },
-      },
-    },
-    required: ["action"],
-  },
+  inputSchema: AGY_INTERCOM_INPUT_SCHEMA,
 } as const;
 
 type JsonRpcId = string | number | null;
@@ -103,71 +72,28 @@ function packageVersion(): string {
   }
 }
 
-function parseAction(value: unknown): IntercomToolParams["action"] | undefined {
-  return VALID_ACTIONS.find((action) => action === value);
-}
-
-function optString(record: Readonly<Record<string, unknown>>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" ? value : undefined;
-}
-
-function optNumber(record: Readonly<Record<string, unknown>>, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === "number" ? value : undefined;
-}
-
-function parseAttachments(raw: unknown): readonly Attachment[] | undefined {
-  if (!isUnknownArray(raw)) {
-    return;
+function negotiateProtocolVersion(params: Readonly<Record<string, unknown>>): string {
+  const requested = params.protocolVersion;
+  if (
+    typeof requested === "string" &&
+    SUPPORTED_MCP_PROTOCOLS.some((version) => version === requested)
+  ) {
+    return requested;
   }
-  const items: Attachment[] = [];
-  for (const item of raw) {
-    if (
-      !isRecord(item) ||
-      (item.type !== "file" && item.type !== "snippet" && item.type !== "context") ||
-      typeof item.name !== "string" ||
-      typeof item.content !== "string"
-    ) {
-      continue;
-    }
-    items.push({
-      type: item.type,
-      name: item.name,
-      content: item.content,
-      ...(typeof item.language === "string" ? { language: item.language } : {}),
-    });
-  }
-  return items;
+  return DEFAULT_MCP_PROTOCOL;
 }
 
-function parseToolParams(raw: unknown): IntercomToolParams | undefined {
-  const action = isRecord(raw) ? parseAction(raw.action) : undefined;
-  if (!isRecord(raw) || action === undefined) {
-    return;
+function validateToolParams(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: IntercomToolParams }
+  | { readonly ok: false; readonly message: string } {
+  const validated = intercomValidator.validate(raw);
+  if (!validated.ok) {
+    const detail = validated.errors.map((error) => `${error.path}: ${error.message}`).join("; ");
+    return { ok: false, message: `Invalid intercom tool arguments: ${detail}` };
   }
-  const scope = raw.scope === "project" || raw.scope === "all" ? raw.scope : undefined;
-  const children = typeof raw.children === "boolean" ? raw.children : undefined;
-  const attachments = parseAttachments(raw.attachments);
-  const fields: Partial<IntercomToolParams> = {
-    ...(scope !== undefined ? { scope } : {}),
-    ...(children !== undefined ? { children } : {}),
-    ...(attachments !== undefined ? { attachments } : {}),
-  };
-  const strings = {
-    device: optString(raw, "device"),
-    to: optString(raw, "to"),
-    message: optString(raw, "message"),
-    replyTo: optString(raw, "replyTo"),
-    entryId: optString(raw, "entryId"),
-  };
-  const numbers = { offset: optNumber(raw, "offset"), limit: optNumber(raw, "limit") };
-  return {
-    action,
-    ...fields,
-    ...Object.fromEntries(Object.entries(strings).filter(([, value]) => value !== undefined)),
-    ...Object.fromEntries(Object.entries(numbers).filter(([, value]) => value !== undefined)),
-  };
+  return { ok: true, value: validated.value };
 }
 
 function parseMetaContext(params: Readonly<Record<string, unknown>>): AgyToolCallContext {
@@ -238,12 +164,10 @@ export class AgyMcpServer {
       writeError(id, -32602, `Unknown tool: ${typeof params.name === "string" ? params.name : ""}`);
       return;
     }
-    const toolParams = parseToolParams(params.arguments);
-    if (!toolParams) {
+    const parsed = validateToolParams(params.arguments);
+    if (!parsed.ok) {
       writeResult(id, {
-        content: [
-          { type: "text", text: "Invalid intercom tool arguments: missing or invalid action." },
-        ],
+        content: [{ type: "text", text: parsed.message }],
         isError: true,
       });
       return;
@@ -255,7 +179,7 @@ export class AgyMcpServer {
     }
     try {
       const result = await this.hub.executeTool(
-        toolParams,
+        parsed.value,
         parseMetaContext(params),
         controller.signal,
       );
@@ -283,7 +207,7 @@ export class AgyMcpServer {
     switch (method) {
       case "initialize":
         writeResult(id, {
-          protocolVersion: MCP_PROTOCOL_VERSION,
+          protocolVersion: negotiateProtocolVersion(params),
           capabilities: { tools: {} },
           serverInfo: { name: SERVER_NAME, version: this.version },
         });

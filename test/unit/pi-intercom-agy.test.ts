@@ -4,10 +4,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test as nodeTest } from "node:test";
 import { AgyInboundQueue, applyHookTransition } from "../../src/pi-intercom/agy/inbound-queue.ts";
+import { AGY_INTERCOM_INPUT_SCHEMA } from "../../src/pi-intercom/agy/mcp-server.ts";
 import { agyPeerId, parseWakeCredentials } from "../../src/pi-intercom/agy/paths.ts";
 import { readAgyLastMessage } from "../../src/pi-intercom/agy/transcript.ts";
+import { intercomSchema } from "../../src/pi-intercom/tool-schemas.ts";
 import type { SessionInfo } from "../../src/pi-intercom/types.ts";
-import { text } from "../support/assertions.ts";
+import { record, text } from "../support/assertions.ts";
 
 function sampleSession(): SessionInfo {
   return {
@@ -171,5 +173,16 @@ nodeTest(
     assert.equal(stopCanceled.status, "idle");
     assert.deepEqual(stopCanceled.response, {});
     assert.equal(queue.length, 1);
+  },
+);
+
+nodeTest(
+  "AGY_INTERCOM_INPUT_SCHEMA stays in lockstep with intercomSchema excluding child-only contract",
+  () => {
+    const piKeys = Object.keys(intercomSchema.properties)
+      .filter((key) => key !== "contract")
+      .sort();
+    const agyKeys = Object.keys(record(AGY_INTERCOM_INPUT_SCHEMA.properties)).sort();
+    assert.deepEqual(agyKeys, piKeys);
   },
 );
