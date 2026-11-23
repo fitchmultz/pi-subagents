@@ -93,6 +93,11 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
     assert.equal(isHighImpactBash("git commit -m 'local work'"), false);
     assert.equal(isHighImpactBash("npm run test:unit"), false);
     assert.equal(isHighImpactBash("rg -n foo src/"), false);
+    // Linear time on long option chains (regression against regex backtracking).
+    const start = performance.now();
+    assert.equal(isHighImpactBash(`npm ${"--flag ".repeat(500)}run`), false);
+    assert.equal(isHighImpactBash(`wrangler ${"--flag ".repeat(500)}tail`), false);
+    assert.ok(performance.now() - start < 200);
 
     const delegated = extractParentAction("delegate", {
       prompt: "Implement X",

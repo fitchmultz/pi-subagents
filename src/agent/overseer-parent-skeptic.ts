@@ -21,19 +21,85 @@ import { Type } from "./typebox.ts";
 
 const MIN_EXCERPT_CHARS = 6;
 
-const GIT_GLOBAL_OPTS = String.raw`(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree)(?:=|\s+)\S+))*`;
-const CLI_OPTS = String.raw`(?:\s+(?:-[a-zA-Z]+|--[\w-]+(?:=\S+|\s+\S+)?))*`;
+const GIT_VALUE_FLAGS = new Set(["-C", "-c", "--git-dir", "--work-tree"]);
+const CLI_VALUE_FLAGS = new Set(["--workspace", "--filter", "-C", "--dir", "--config", "-c"]);
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/u;
 
-const HIGH_IMPACT_BASH_PATTERNS: readonly RegExp[] = [
-  /\bgh(?:-[\w-]+)?\s+(?:pr\s+merge|release\s+(?:create|delete))\b/u,
-  new RegExp(
-    String.raw`\bgit${GIT_GLOBAL_OPTS}\s+(?:push\b|reset\b[^\n;&|]*--hard\b|clean\b[^\n;&|]*(?:-[a-zA-Z]*f[a-zA-Z]*|--force)\b|branch\b[^\n;&|]*(?:-D\b|--delete\b[^\n;&|]*--force\b|--force\b[^\n;&|]*--delete\b))`,
-    "u",
-  ),
-  new RegExp(String.raw`\b(?:npm|pnpm|yarn)${CLI_OPTS}\s+publish\b`, "u"),
-  new RegExp(String.raw`\bwrangler${CLI_OPTS}\s+deploy\b`, "u"),
-  new RegExp(String.raw`\bchezmoi${CLI_OPTS}\s+apply\b`, "u"),
-];
+function nextSubcommand(tokens: readonly string[], valueFlags: ReadonlySet<string>): number {
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (token === undefined || !token.startsWith("-")) {
+      return i;
+    }
+    i += valueFlags.has(token) ? 2 : 1;
+  }
+  return tokens.length;
+}
+
+function isHighImpactGit(tokens: readonly string[]): boolean {
+  const index = nextSubcommand(tokens, GIT_VALUE_FLAGS);
+  const sub = tokens[index];
+  const rest = tokens.slice(index + 1);
+  if (sub === "push") {
+    return true;
+  }
+  if (sub === "reset") {
+    return rest.includes("--hard");
+  }
+  if (sub === "clean") {
+    return rest.some(
+      (arg) =>
+        arg === "--force" || (arg.startsWith("-") && !arg.startsWith("--") && arg.includes("f")),
+    );
+  }
+  if (sub === "branch") {
+    return rest.includes("-D") || (rest.includes("--delete") && rest.includes("--force"));
+  }
+  return false;
+}
+
+const CLI_GATED_SUBCOMMANDS = new Map<string, string>([
+  ["npm", "publish"],
+  ["pnpm", "publish"],
+  ["yarn", "publish"],
+  ["wrangler", "deploy"],
+  ["chezmoi", "apply"],
+]);
+
+function isHighImpactGh(tokens: readonly string[]): boolean {
+  const [, sub, action] = tokens;
+  return (
+    (sub === "pr" && action === "merge") ||
+    (sub === "release" && (action === "create" || action === "delete"))
+  );
+}
+
+function stripLeadingEnv(tokens: readonly string[]): readonly string[] {
+  let start = 0;
+  while (start < tokens.length && ENV_ASSIGNMENT.test(tokens[start] ?? "")) {
+    start += 1;
+  }
+  return start === 0 ? tokens : tokens.slice(start);
+}
+
+function isHighImpactSegment(rawSegment: string): boolean {
+  const cmdTokens = stripLeadingEnv(rawSegment.trim().split(/\s+/u).filter(Boolean));
+  const cmd = cmdTokens[0];
+  if (cmd === undefined) {
+    return false;
+  }
+  if (cmd === "git") {
+    return isHighImpactGit(cmdTokens);
+  }
+  if (cmd === "gh" || cmd.startsWith("gh-")) {
+    return isHighImpactGh(cmdTokens);
+  }
+  const gatedSub = CLI_GATED_SUBCOMMANDS.get(cmd);
+  return (
+    gatedSub !== undefined && cmdTokens[nextSubcommand(cmdTokens, CLI_VALUE_FLAGS)] === gatedSub
+  );
+}
 
 export const parentFindingKindSchema = Type.Union([
   Type.Literal("contradicts_owner"),
@@ -102,7 +168,7 @@ const PARENT_SKEPTIC_SYSTEM_PROMPT = [
 ].join("\n");
 
 export function isHighImpactBash(command: string): boolean {
-  return HIGH_IMPACT_BASH_PATTERNS.some((pattern) => pattern.test(command));
+  return command.split(/[;\n|&]+/u).some((segment) => isHighImpactSegment(segment));
 }
 
 function readString(record: Record<string, unknown>, key: string): string | undefined {
