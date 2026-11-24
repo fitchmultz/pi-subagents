@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
   CreateAgentSessionRuntimeFactory,
+  Extension,
   ExtensionAPI,
   ExtensionContext,
   SettingsManager,
@@ -15,6 +17,44 @@ import type { OverseerSentinel } from "./overseer-sentinel.ts";
 import { recordAt, type UnknownRecord } from "../shared/unknown.ts";
 
 const EDIT_TOOLS = new Set(["edit", "write", "replace_text", "write_files", "apply_patch"]);
+const CHILD_GUARDED_TOOLS = new Set(["delegate", "agent_runs"]);
+const NON_MID_CONVO_TOOL_APIS = new Set([
+  "google-generative-ai",
+  "google-vertex",
+  "bedrock-converse-stream",
+]);
+
+export function supportsMidConvoToolChanges(model: Pick<Model<Api>, "api" | "compat">): boolean {
+  if (NON_MID_CONVO_TOOL_APIS.has(model.api)) {
+    return false;
+  }
+  const compat = recordAt(model, "compat");
+  if (!compat || compat.supportsMidConvoSystemMessages !== true) {
+    return false;
+  }
+  return compat.supportsMidConvoToolChanges === true || compat.supportsAdditionalTools === true;
+}
+
+export function shouldPreserveParentTools(
+  launch: Pick<Launch, "context">,
+  model: Pick<Model<Api>, "api" | "compat">,
+): boolean {
+  return launch.context === "fork" && !supportsMidConvoToolChanges(model);
+}
+
+function exposeGuardedTools(extensions: readonly Extension[]): void {
+  for (const extension of extensions) {
+    for (const name of CHILD_GUARDED_TOOLS) {
+      const registered = extension.tools.get(name);
+      if (registered?.definition.exposure === "hidden") {
+        extension.tools.set(name, {
+          ...registered,
+          definition: { ...registered.definition, exposure: "direct" },
+        });
+      }
+    }
+  }
+}
 
 function rewriteLocalBash(
   pi: ExtensionAPI,
@@ -146,7 +186,6 @@ export function childRuntime(
         ],
       },
     });
-    exposeChildTools(services.settingsManager);
     const diagnostics = services.resourceLoader.getExtensions().errors;
     if (diagnostics.length > 0) {
       throw new Error(`Child extension load failed: ${JSON.stringify(diagnostics)}`);
@@ -156,6 +195,11 @@ export function childRuntime(
       throw new Error(
         `Saved model ${launch.provider}/${launch.model} is unavailable; no fallback was used.`,
       );
+    }
+    if (shouldPreserveParentTools(launch, model)) {
+      exposeGuardedTools(services.resourceLoader.getExtensions().extensions);
+    } else {
+      exposeChildTools(services.settingsManager);
     }
     return {
       ...(await sdk.createAgentSessionFromServices({
