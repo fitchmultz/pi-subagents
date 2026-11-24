@@ -7,7 +7,8 @@ import type {
   ThinkingLevel,
   Tool,
 } from "@earendil-works/pi-ai";
-import { compile } from "@earendil-works/pi-schema";
+import { arr, compile, obj } from "@earendil-works/pi-schema";
+import { stringEnum } from "../shared/schema.ts";
 import {
   skepticFindingSchema,
   type JudgeCheckpoint,
@@ -17,7 +18,6 @@ import {
 } from "./contracts.ts";
 import { errorText } from "./host.ts";
 import { activeOverseer, OVERSEER_STATE_FILE, splitModelSpec } from "./overseer.ts";
-import { Type } from "./typebox.ts";
 import { DirectoryWatch } from "./wake.ts";
 
 /**
@@ -39,10 +39,13 @@ const PREFERRED_AUTO_SKEPTICS: readonly (readonly [string, string, ThinkingLevel
 
 export const MIN_EXCERPT_CHARS = 6;
 
-const skepticResponseSchema = Type.Object({
-  action: Type.Union([Type.Literal("ok"), Type.Literal("flag")]),
-  findings: Type.Array(skepticFindingSchema),
-});
+const skepticResponseSchema = obj(
+  {
+    action: stringEnum(["ok", "flag"]),
+    findings: arr(skepticFindingSchema),
+  },
+  { open: true },
+);
 const parseSkepticResponse = compile(skepticResponseSchema, { coerce: true });
 const REPORT_FINDINGS_TOOL: Tool = {
   name: "report_findings",

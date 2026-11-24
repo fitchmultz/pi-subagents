@@ -8,7 +8,7 @@ operation. Its inventory is not a finding-count budget.
 
 The audit at base `7f449e2` found 353 real lint directive comments in 61 files:
 318 next-line directives and 35 range/file/enable directives. The current code
-has 23 next-line directives in 11 files and no range or file disables.
+has 21 next-line directives in 10 files and no range or file disables.
 Literal examples in tests and documentation are not directives.
 
 Removed protections are not silently waived: JSON enters as `unknown` and is
@@ -75,24 +75,22 @@ rather than allowing `any` to propagate.
 
 | Directive location                           | Runtime artifact and required identity                     |
 | -------------------------------------------- | ---------------------------------------------------------- |
-| `src/agent/host.ts:111`                      | SDK from the caller-selected package root.                 |
+| `src/agent/host.ts:135`                      | SDK from the caller-selected package root.                 |
 | `src/agent/observe-layout.ts:18`             | Selected host's TUI root.                                  |
 | `src/agent/observe-layout.ts:20`             | That TUI's layout module.                                  |
 | `src/agent/observe-layout.ts:22`             | That TUI's dispatch module.                                |
-| `src/agent/typebox.ts:11`                    | Detached child's selected TypeBox instance.                |
-| `src/agent/typebox.ts:16`                    | The same graph's TypeBox value operations.                 |
 | `.github/scripts/ci-host.mjs:31`             | `common.mjs` from the workflow-pinned automation checkout. |
 | `.github/scripts/ci-host.mjs:36`             | `hosts.mjs` from that same automation checkout.            |
-| `scripts/package-smoke.mjs:157`              | Installed package's emitted host loader, not source.       |
-| `scripts/package-smoke.mjs:187`              | Installed package's emitted broker launcher.               |
+| `scripts/package-smoke.mjs:178`              | Installed package's emitted host loader, not source.       |
+| `scripts/package-smoke.mjs:192`              | Installed package's emitted broker launcher.               |
 | `test/support/native-host.ts:13`             | Pi AI companion resolved from the caller-selected SDK.     |
 | `test/fixtures/single-agent-shutdown.mjs:36` | Supplied repository's compiled agent entry.                |
-| `test/fixtures/single-agent-parent.mjs:96`   | Supplied repository's compiled agent entry.                |
-| `test/fixtures/single-agent-parent.mjs:101`  | Its already-loaded process owner.                          |
-| `test/fixtures/single-agent-parent.mjs:106`  | Its already-loaded session-target owner.                   |
-| `test/fixtures/single-agent-parent.mjs:111`  | Its already-loaded storage owner.                          |
-| `test/fixtures/single-agent-parent.mjs:116`  | Its compiled intercom extension when that phase needs it.  |
-| `test/fixtures/single-agent-parent.mjs:516`  | Its compiled broker client constructor.                    |
+| `test/fixtures/single-agent-parent.mjs:146`  | Supplied repository's compiled agent entry.                |
+| `test/fixtures/single-agent-parent.mjs:151`  | Its already-loaded process owner.                          |
+| `test/fixtures/single-agent-parent.mjs:156`  | Its already-loaded session-target owner.                   |
+| `test/fixtures/single-agent-parent.mjs:161`  | Its already-loaded storage owner.                          |
+| `test/fixtures/single-agent-parent.mjs:166`  | Its compiled intercom extension when that phase needs it.  |
+| `test/fixtures/single-agent-parent.mjs:601`  | Its compiled broker client constructor.                    |
 
 The simple statically typed alternative is:
 
@@ -119,7 +117,9 @@ Safety rests on trusted installed/generated code and matched host qualification,
 not a property-presence predicate. Such a predicate cannot verify class private
 brands, overloads, generics, or return contracts. `packageRoot` validates SDK
 package identity; companion resolution starts at that root. Build/package smokes
-compare exact SDK/TypeBox identities and exercise actual emitted consumers.
+compare exact SDK identity, verify detached runtime modules validate on
+`@earendil-works/pi-schema` without loading `typebox`, and exercise actual
+emitted consumers.
 The CI automation interfaces match the workflow's immutable automation revision
 `1f78bd6585d8a5570f0226cca0b6877c9f4dd9c2`; its actual host qualification exercises
 both imported APIs.

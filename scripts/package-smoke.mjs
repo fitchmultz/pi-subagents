@@ -16,13 +16,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostRoot } from "./compat-host.mjs";
 import { compilerInvocation } from "./typescript.mjs";
+import { arr, compile, obj, str } from "@earendil-works/pi-schema";
+import { assertValid } from "../src/shared/schema.ts";
 import { isRecord, isUnknownArray } from "../src/shared/unknown.ts";
-import { Type } from "typebox";
-import { Assert } from "typebox/value";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
-    "Usage: node scripts/package-smoke.mjs [tarball]\n\nPack and install the single-entry package without development dependencies, or test an existing tarball unchanged. Verify host SDK/TypeBox identity and execute a real native actor using a credential-free local provider. No publication or paid model calls.\nExit codes: 0 passed; 1 packaging, native execution or cleanup failed.",
+    "Usage: node scripts/package-smoke.mjs [tarball]\n\nPack and install the single-entry package without development dependencies, or test an existing tarball unchanged. Verify host SDK identity, TypeBox-free detached validation, and execute a real native actor using a credential-free local provider. No publication or paid model calls.\nExit codes: 0 passed; 1 packaging, native execution or cleanup failed.",
   );
   process.exit(0);
 }
@@ -182,28 +182,12 @@ async function verifyRuntime(
     sdk,
     "actor must use the exact selected host SDK",
   );
-  run(
-    process.execPath,
-    [
-      "--input-type=module",
-      "-e",
-      `import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
-const require = createRequire(${JSON.stringify(join(hostRoot, "dist/index.js"))});
-const hostTypebox = await import(pathToFileURL(require.resolve("typebox")).href);
-const hostValue = await import(pathToFileURL(require.resolve("typebox/value")).href);
-const native = await import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/typebox.js")).href)});
-assert.equal(native.Type, hostTypebox.Type, "detached schemas use the selected host");
-assert.equal(native.Assert, hostValue.Assert, "detached validation uses the selected host");`,
-    ],
-    root,
-    {
-      ...process.env,
-      PI_INTERCOM_ROOT_SESSION_ID: "package-smoke",
-      PI_INTERCOM_PARENT_SESSION_ID: "package-smoke",
-    },
+  assert.equal(
+    existsSync(join(packageRoot, "dist/agent/typebox.js")),
+    false,
+    "retired TypeBox adapter must not ship",
   );
+  verifyDetachedValidation(packageRoot);
   /** @type {typeof import("../src/pi-intercom/broker/spawn.ts")} */
   // oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
   const broker = await import(
@@ -246,16 +230,60 @@ assert.equal(native.Assert, hostValue.Assert, "detached validation uses the sele
   );
 }
 
+function verifyDetachedValidation(/** @type {string} */ packageRoot) {
+  run(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
+import { pathToFileURL } from "node:url";
+const hook = registerHooks({
+  resolve(specifier, context, next) {
+    assert.doesNotMatch(specifier, /^typebox(?:\\/|$)/, "detached runtime must not load typebox");
+    return next(specifier, context);
+  },
+});
+try {
+  const [contracts, schema] = await Promise.all([
+    import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/contracts.js")).href)}),
+    import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/shared/schema.js")).href)}),
+    import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/storage.js")).href)}),
+    import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/usage.js")).href)}),
+    import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/overseer-pause.js")).href)}),
+    import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/overseer-skeptic.js")).href)}),
+  ]);
+  schema.assertValid(contracts.readySchema, { token: "smoke", extra: true });
+  assert.throws(() => schema.assertValid(contracts.readySchema, { token: 123 }), /\\/token:/);
+} finally {
+  hook.deregister();
+}`,
+    ],
+    root,
+    {
+      ...process.env,
+      PI_INTERCOM_ROOT_SESSION_ID: "package-smoke",
+      PI_INTERCOM_PARENT_SESSION_ID: "package-smoke",
+    },
+  );
+}
+
 try {
   verifyManifest(packageJson);
   process.env.PI_PACKAGE_DIR = hostRoot;
-  const packSchema = Type.Array(
-    Type.Object({
-      name: Type.String(),
-      version: Type.String(),
-      filename: Type.String(),
-      files: Type.Array(Type.Object({ path: Type.String() })),
-    }),
+  const packValidator = compile(
+    arr(
+      obj(
+        {
+          name: str(),
+          version: str(),
+          filename: str(),
+          files: arr(obj({ path: str() }, { open: true })),
+        },
+        { open: true },
+      ),
+    ),
   );
   /** @type {unknown} */
   const report = JSON.parse(
@@ -270,7 +298,7 @@ try {
   // npm 12 reports by package name; earlier npm versions report an array.
   assert.ok(isRecord(report) || isUnknownArray(report));
   const packReports = Object.values(report);
-  Assert(packSchema, packReports);
+  assertValid(packValidator, packReports);
   const pack = packReports[0];
   assert.ok(pack !== undefined && Array.isArray(pack.files), "npm pack must report files");
   if (candidate !== undefined) {

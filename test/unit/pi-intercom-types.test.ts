@@ -2,7 +2,8 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe as nodeDescribe, it as nodeIt } from "node:test";
 import { validateToolArguments } from "@earendil-works/pi-ai";
-import { Assert } from "../../src/agent/typebox.ts";
+import { compile } from "@earendil-works/pi-schema";
+import { assertValid } from "../../src/shared/schema.ts";
 import { isLastMessageResult } from "../../src/pi-intercom/broker/last.ts";
 import { getSanitizedAssistantError } from "../../src/pi-intercom/message-format.ts";
 import { intercomSchema } from "../../src/pi-intercom/tool-schemas.ts";
@@ -195,6 +196,7 @@ nodeDescribe("pi-intercom wire validation", () => {
 });
 
 nodeDescribe("intercomSchema strict property validation", () => {
+  const intercomValidator = compile(intercomSchema);
   const tool = {
     name: "intercom",
     description: "Intercom tool",
@@ -215,7 +217,7 @@ nodeDescribe("intercomSchema strict property validation", () => {
         },
       ],
     };
-    Assert(intercomSchema, valid);
+    assertValid(intercomValidator, valid);
     validateToolArguments(tool, {
       type: "toolCall",
       id: "call-valid",
@@ -226,7 +228,7 @@ nodeDescribe("intercomSchema strict property validation", () => {
       { action: "claim", message: "PSA-203 session visibility" },
       { action: "claim", message: "" },
     ]) {
-      Assert(intercomSchema, claim);
+      assertValid(intercomValidator, claim);
       validateToolArguments(tool, {
         type: "toolCall",
         id: "call-claim",
@@ -238,7 +240,7 @@ nodeDescribe("intercomSchema strict property validation", () => {
 
   nodeIt("rejects unexpected properties on the root schema and attachment items", () => {
     const rootExtra = { action: "list", extraField: true };
-    assert.throws(() => Assert(intercomSchema, rootExtra));
+    assert.throws(() => assertValid(intercomValidator, rootExtra));
     assert.throws(() => {
       validateToolArguments(tool, {
         type: "toolCall",
@@ -256,7 +258,7 @@ nodeDescribe("intercomSchema strict property validation", () => {
       { action: "send", to: "worker", message: "Hi", queueMode: "replace", threadId: "t1" },
       { action: "reply", message: "Hi", contract: { scope: ["src"] } },
     ]) {
-      assert.throws(() => Assert(intercomSchema, removed));
+      assert.throws(() => assertValid(intercomValidator, removed));
     }
 
     const attachmentExtra = {
@@ -272,7 +274,7 @@ nodeDescribe("intercomSchema strict property validation", () => {
         },
       ],
     };
-    assert.throws(() => Assert(intercomSchema, attachmentExtra));
+    assert.throws(() => assertValid(intercomValidator, attachmentExtra));
     assert.throws(() => {
       validateToolArguments(tool, {
         type: "toolCall",

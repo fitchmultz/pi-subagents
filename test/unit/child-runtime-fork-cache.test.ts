@@ -7,24 +7,32 @@ import { findPackageJSON } from "node:module";
 import { describe as nodeDescribe, it as nodeIt, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
-import { Assert } from "typebox/value";
+import { arr, compile, obj, opt, str } from "@earendil-works/pi-schema";
 import { backgroundCommands } from "../../src/agent/background-work.ts";
 import { childRuntime } from "../../src/agent/child-runtime.ts";
 import type { Launch } from "../../src/agent/contracts.ts";
 import { loadSDK, packageRoot, runtimeEntry } from "../../src/agent/host.ts";
+import { assertValid } from "../../src/shared/schema.ts";
 import { isRecord } from "../../src/shared/unknown.ts";
 
-const capturedRequestSchema = Type.Object({
-  prompt: Type.String(),
-  declared: Type.Array(Type.String()),
-  systemMessages: Type.Array(
-    Type.Object({
-      toolsAdded: Type.Optional(Type.Array(Type.Object({ name: Type.String() }))),
-      toolsRemoved: Type.Optional(Type.Array(Type.Object({ name: Type.String() }))),
-    }),
+const capturedRequestValidator = compile(
+  obj(
+    {
+      prompt: str(),
+      declared: arr(str()),
+      systemMessages: arr(
+        obj(
+          {
+            toolsAdded: opt(arr(obj({ name: str() }, { open: true }))),
+            toolsRemoved: opt(arr(obj({ name: str() }, { open: true }))),
+          },
+          { open: true },
+        ),
+      ),
+    },
+    { open: true },
   ),
-});
+);
 
 function writeFixtureExtension(file: string, sdkRoot: string, logFile: string): void {
   const aiManifest = findPackageJSON(
@@ -152,7 +160,7 @@ function readCapturedRequests(logFile: string) {
   }
   return raw.split("\n").map((line) => {
     const parsed: unknown = JSON.parse(line);
-    Assert(capturedRequestSchema, parsed);
+    assertValid(capturedRequestValidator, parsed);
     return parsed;
   });
 }

@@ -1,10 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import type { Schema, Validator } from "@earendil-works/pi-schema";
 import { readJsonProjection } from "../shared/journal-frames.ts";
 import type { Projection } from "../shared/json-projection.ts";
-import { Assert } from "./typebox.ts";
-import type { Static, TSchema } from "typebox";
+import { assertValid } from "../shared/schema.ts";
 import {
   launchSchema,
   successorSchema,
@@ -19,11 +19,11 @@ export function missing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
-export function read<T extends TSchema>(
+export function read<T>(
   file: string,
-  schema: T,
+  schema: Schema<T> | Validator<T>,
   select: Projection = () => true,
-): Static<T> | undefined {
+): T | undefined {
   let value: unknown;
   try {
     value = readJsonProjection(file, select);
@@ -33,7 +33,7 @@ export function read<T extends TSchema>(
     }
     throw error;
   }
-  Assert(schema, value);
+  assertValid(schema, value);
   return value;
 }
 

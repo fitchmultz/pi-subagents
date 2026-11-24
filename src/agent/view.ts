@@ -4,6 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readOutputPage } from "../shared/output-page.ts";
 import { actor, alive, observeAlive } from "./process.ts";
 import {
+  COMMAND_METADATA_KEYS,
   admissionSchema,
   commandMetadataSchema,
   exitSchema,
@@ -149,8 +150,7 @@ function guidanceView(base: string, launches: readonly Launch[]): Map<string, Gu
           path.join(dir, file),
           commandMetadataSchema,
           (keys) =>
-            keys.length === 0 ||
-            (keys.length === 1 && Object.hasOwn(commandMetadataSchema.properties, String(keys[0]))),
+            keys.length === 0 || (keys.length === 1 && COMMAND_METADATA_KEYS.has(String(keys[0]))),
         );
         const guidance = command && runIds.has(command.runId) ? runs.get(command.runId) : undefined;
         if (command?.action !== "steer" || !guidance) {

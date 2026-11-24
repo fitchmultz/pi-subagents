@@ -85,17 +85,20 @@ and print/RPC sessions do not install the observer.
 
 ### TypeBox host-instance startup (#234)
 
-In runtime-only installs without a resolvable package-local or ancestor TypeBox,
-the extension now uses Pi's aliased/virtual `typebox` and `typebox/value` modules
-in the host. Only detached runners resolve absolute imports from the selected
-host package. The Type/Assert export contracts are unchanged; there is no
+All internal schemas and runtime validation now run on `@earendil-works/pi-schema`,
+so detached child runners no longer load `typebox` or `typebox/value` and the
+former `src/agent/typebox.ts` adapter has been removed. Only `pi.registerTool()`
+boundary schemas (`src/agent/tool-schemas.ts` and `src/pi-intercom/tool-schemas.ts`)
+import `{ Type } from "typebox"` directly, which Pi resolves through its
+aliased/virtual host module in runtime-only installs. There is still no
 package-local runtime TypeBox dependency.
 
-An isolated Linux x86_64 RPC probe compared `ae4c363713a6c4b75092b5f15927957e915cf050`
-with the same tree plus the conditional imports in `src/agent/typebox.ts`. Both
-full package copies contained compiled `dist` and only the production stream
-dependencies, with no TypeBox/Pi in their own `node_modules` or ancestors. The
-host was the lockfile's official npm Pi 1.4.0, bundled `dist/bundle/cli.js` SHA-256
+An earlier isolated Linux x86_64 RPC probe (#234) compared
+`ae4c363713a6c4b75092b5f15927957e915cf050` with the same tree plus conditional
+imports in the then-current `src/agent/typebox.ts`. Both full package copies
+contained compiled `dist` and only the production stream dependencies, with no
+TypeBox/Pi in their own `node_modules` or ancestors. The host was the lockfile's
+official npm Pi 1.4.0, bundled `dist/bundle/cli.js` SHA-256
 `e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774`, using
 `/usr/local/bin/node` v24.22.0. This is not a measurement of the maintained fork.
 
@@ -118,15 +121,16 @@ snapshot once, seven A/B rounds alternated execution order (B/A, A/B, ...).
 Individual import times were before `239, 236, 251, 227, 267, 241, 259` ms and
 after `78, 87, 76, 87, 81, 102, 86` ms. The median import dropped 155 ms (64%);
 these are local warm-cache startup observations, not cold-cache, interactive,
-model-latency, or universal performance guarantees. The package smoke separately
-checks host Type/Assert identity through Pi's loader, detached Type/Assert
-identity against the selected host in a production-only install, and actual
-native child execution. The bundled-host identity check rejects the pre-fix
-adapter. Native-loaded development or consumer graphs with independently
-installed or hoisted TypeBox can resolve that copy before Jiti applies aliases;
-this change does not force aliasing in those layouts. Their parent-side adapter
-can now use that copy instead of the host's on-disk copy. Those graphs are outside
-this production-only measurement; the full checkout functional smoke still runs.
+model-latency, or universal performance guarantees, and no fresh A/B startup
+measurement was taken for the later `@earendil-works/pi-schema` internal
+validation migration. The package smoke now checks that `dist/agent/typebox.js`
+does not ship, that detached runtime modules load and validate via
+`@earendil-works/pi-schema` without resolving `typebox`, that `registerTool()`
+schemas load under Pi's host loader in production-only installs, and that actual
+native child execution passes. Native-loaded development or consumer graphs with
+independently installed or hoisted TypeBox can still resolve that copy before
+Jiti applies aliases; those graphs are outside this production-only measurement,
+and the full checkout functional smoke still runs.
 
 ### Session attach inventory (#248)
 

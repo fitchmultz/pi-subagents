@@ -398,18 +398,16 @@ try {
     observer,
     `import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
-import { Type } from "typebox";
-import { Assert } from "typebox/value";
 import * as PiSDK from "@earendil-works/pi-coding-agent";
-import { Type as AgentType, Assert as AgentAssert } from ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/typebox.js")).href)};
+import { delegateSchema, runsSchema } from ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/tool-schemas.js")).href)};
+import { intercomSchema } from ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/pi-intercom/tool-schemas.js")).href)};
 import { loadSDK, packageRoot as selectedRoot } from ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/host.js")).href)};
 export default function(pi) {
-  // Native development graphs can resolve local peers before Jiti runs.
-  // Production-only installs must instead reuse the bundled host's virtual modules.
-  if (${!existsSync(join(packageRoot, "node_modules/typebox"))}) {
-    assert.equal(AgentType, Type, "extension schemas reuse Pi's TypeBox instance");
-    assert.equal(AgentAssert, Assert, "extension validation reuses Pi's TypeBox instance");
-  }
+  // Production-only installs have no package-local typebox; registerTool() schemas load through
+  // Pi's aliased/virtual typebox while internal validation runs on @earendil-works/pi-schema.
+  assert.equal(delegateSchema.type, "object");
+  assert.equal(runsSchema.type, "object");
+  assert.equal(intercomSchema.type, "object");
   pi.on("session_start", async (_event, ctx) => {
     // Delegation, /agents and parked history load the SDK through this adapter. Jiti wraps
     // each importer's namespace, so compare the session class delegation constructs.

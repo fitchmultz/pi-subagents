@@ -3,15 +3,27 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { findPackageJSON, syncBuiltinESMExports } from "node:module";
+import { syncBuiltinESMExports } from "node:module";
 import childProcess, { spawn, spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { mock } from "node:test";
 import { registeredSession } from "../support/native-readiness.ts";
 import { loadNativeAI } from "../support/native-host.ts";
 import { loadSDK } from "../../src/agent/host.ts";
-import { Type } from "typebox";
-import { Assert } from "typebox/value";
+import {
+  arr,
+  bool,
+  compile,
+  int,
+  nullable,
+  num,
+  obj,
+  oneOf,
+  opt,
+  str,
+  unknown,
+} from "@earendil-works/pi-schema";
+import { assertValid } from "../../src/shared/schema.ts";
 import { hasErrorCode, isRecord, isUnknownArray } from "../../src/shared/unknown.ts";
 /** @import * as Storage from "../../src/agent/storage.ts" */
 
@@ -20,11 +32,8 @@ const cwd = path.join(root, "project"),
   agentDir = path.join(root, "agent");
 const sdkLink = path.join(root, "selected-sdk");
 if (phase === "park-sdk-outcome") {
-  const typebox = findPackageJSON("typebox", path.join(sdkRoot, "dist/index.js"));
-  assert.ok(typebox !== undefined);
   fs.mkdirSync(path.join(root, "node_modules"));
   fs.symlinkSync(path.dirname(sdkRoot), path.join(root, "node_modules/@earendil-works"), "dir");
-  fs.symlinkSync(path.dirname(typebox), path.join(root, "node_modules/typebox"), "dir");
   fs.symlinkSync(sdkRoot, sdkLink, "dir");
 }
 for (const key of Object.keys(process.env)) {
@@ -162,33 +171,37 @@ const intercom = intercomModule?.default;
 // `--no-session` parents: Pi keeps the native transcript only in memory and reports no session file.
 const sessionless = phase.endsWith("-sessionless");
 /** Verified shell family roots recorded by the native launcher. */
-const FamilySchema = Type.Object({ pid: Type.Integer(), descendant: Type.Integer() });
+const FamilySchema = obj({ pid: int(), descendant: int() }, { open: true });
 /** Seed record an earlier phase pins for later recovery. */
-const SeedSchema = Type.Object({
-  runId: Type.Optional(Type.String()),
-  sessionId: Type.Optional(Type.String()),
-  sessionFile: Type.Optional(Type.String()),
-  pid: Type.Optional(Type.Integer()),
-  childPid: Type.Optional(Type.Integer()),
-  family: Type.Optional(FamilySchema),
-  nativeHeader: Type.Optional(Type.String()),
-  legacyResult: Type.Optional(Type.Unknown()),
-  legacyId: Type.Optional(Type.String()),
-  contributions: Type.Optional(Type.Unknown()),
-  bystanderPid: Type.Optional(Type.Integer()),
-});
+const SeedSchema = obj(
+  {
+    runId: opt(str()),
+    sessionId: opt(str()),
+    sessionFile: opt(str()),
+    pid: opt(int()),
+    childPid: opt(int()),
+    family: opt(FamilySchema),
+    nativeHeader: opt(str()),
+    legacyResult: opt(unknown()),
+    legacyId: opt(str()),
+    contributions: opt(unknown()),
+    bystanderPid: opt(int()),
+  },
+  { open: true },
+);
 /**
- * @template {import("typebox").TSchema} S
- * @param {S} schema
+ * @template T
+ * @param {import("@earendil-works/pi-schema").Schema<T> | import("@earendil-works/pi-schema").Validator<T>} schema
  * @param {string | object} source
- * @returns {import("typebox").Static<S>}
+ * @returns {T}
  */
 const parseValidated = (schema, source) => {
   /** @type {unknown} */
   const value = typeof source === "string" ? JSON.parse(source) : source;
-  Assert(schema, value);
+  assertValid(schema, value);
   return value;
 };
+const SettingsExtensionsValidator = compile(obj({ extensions: arr(str()) }, { open: true }));
 const seedFile = path.join(root, "seed.json");
 const seed = fs.existsSync(seedFile)
   ? parseValidated(SeedSchema, fs.readFileSync(seedFile, "utf8"))
@@ -321,7 +334,7 @@ if (phase === "extension-handle-exit") {
   const file = path.join(agentDir, "settings.json");
   /** @type {unknown} */
   const configured = JSON.parse(fs.readFileSync(file, "utf8"));
-  Assert(Type.Object({ extensions: Type.Array(Type.String()) }), configured);
+  assertValid(SettingsExtensionsValidator, configured);
   fs.writeFileSync(
     file,
     JSON.stringify({
@@ -378,7 +391,7 @@ if (phase === "cwd" || phase === "cwd-reopen" || phase.startsWith("cwd-invalid-"
   const file = path.join(agentDir, "settings.json");
   /** @type {unknown} */
   const parsedSettings = JSON.parse(fs.readFileSync(file, "utf8"));
-  Assert(Type.Object({ extensions: Type.Array(Type.String()) }), parsedSettings);
+  assertValid(SettingsExtensionsValidator, parsedSettings);
   const configured = parsedSettings;
   fs.writeFileSync(
     file,
@@ -485,7 +498,7 @@ const publishedRecords = (/** @type {string} */ name) =>
       const value = JSON.parse(text);
       return value;
     });
-/** @returns {import("typebox").Static<typeof RequestRecordSchema>[]} */
+/** @returns {import("@earendil-works/pi-schema").Static<typeof RequestRecordSchema>[]} */
 const requests = () =>
   fs.existsSync(path.join(root, "requests.jsonl"))
     ? publishedRecords("requests.jsonl").map(validating(RequestRecordSchema))
@@ -622,19 +635,22 @@ const runDir = (/** @type {string} */ id) =>
  * @property {{ key?: string } | undefined} completion
  */
 /** Published provider requests carry the child's pid with each model request. */
-const RequestRecordSchema = Type.Object({
-  prompt: Type.Optional(Type.String()),
-  pid: Type.Integer(),
-  model: Type.Optional(Type.String()),
-  thinking: Type.Optional(Type.String()),
-  nativeThinking: Type.String(),
-  root: Type.Optional(Type.String()),
-  parent: Type.Optional(Type.String()),
-  cwd: Type.Optional(Type.String()),
-  context: Type.Optional(Type.Unknown()),
-  tools: Type.Optional(Type.Array(Type.String())),
-  declared: Type.Optional(Type.Array(Type.String())),
-});
+const RequestRecordSchema = obj(
+  {
+    prompt: opt(str()),
+    pid: int(),
+    model: opt(str()),
+    thinking: opt(str()),
+    nativeThinking: str(),
+    root: opt(str()),
+    parent: opt(str()),
+    cwd: opt(str()),
+    context: opt(unknown()),
+    tools: opt(arr(str())),
+    declared: opt(arr(str())),
+  },
+  { open: true },
+);
 /**
  * @param {unknown} value
  * @returns {value is CompletionIdentity}
@@ -654,10 +670,10 @@ const isCompletionIdentity = (value) => {
 const readActorIdentity = (/** @type {string} */ directory) =>
   readValidated(ActorIdentitySchema, path.join(directory, "actor.lock/process.json"));
 /**
- * @template {import("typebox").TSchema} S
- * @param {S} schema
+ * @template T
+ * @param {import("@earendil-works/pi-schema").Schema<T> | import("@earendil-works/pi-schema").Validator<T>} schema
  * @param {string} file
- * @returns {import("typebox").Static<S>}
+ * @returns {T}
  */
 const readValidated = (schema, file) => parseValidated(schema, fs.readFileSync(file, "utf8"));
 /**
@@ -666,196 +682,244 @@ const readValidated = (schema, file) => parseValidated(schema, fs.readFileSync(f
  */
 const parseJournalLine = (text) => parseValidated(PhysicalEntrySchema, text);
 /**
- * @template {import("typebox").TSchema} S
- * @param {S} schema
- * @returns {(record: unknown) => import("typebox").Static<S>}
+ * @template T
+ * @param {import("@earendil-works/pi-schema").Schema<T>} schema
+ * @returns {(record: unknown) => T}
  */
-const validating = (schema) => (record) => {
-  Assert(schema, record);
-  return record;
+const validating = (schema) => {
+  const validator = compile(schema);
+  return (record) => {
+    assertValid(validator, record);
+    return record;
+  };
 };
 /** Actor identity recorded in an actor lock by the native launcher. */
-const ActorIdentitySchema = Type.Object({
-  token: Type.String(),
-  pid: Type.Integer(),
-  identity: Type.Optional(Type.String()),
-});
+const ActorIdentitySchema = obj(
+  {
+    token: str(),
+    pid: int(),
+    identity: opt(str()),
+  },
+  { open: true },
+);
 /** A published shell ledger record. */
-const ShellRecordSchema = Type.Object({
-  pid: Type.Integer(),
-  token: Type.String(),
-  identity: Type.Optional(Type.String()),
-  clock: Type.Optional(Type.Object({ namespace: Type.String() })),
-});
+const ShellRecordSchema = obj(
+  {
+    pid: int(),
+    token: str(),
+    identity: opt(str()),
+    clock: opt(obj({ namespace: str() }, { open: true })),
+  },
+  { open: true },
+);
 /** Use the owning launch contract after clearing inherited child-host environment. */
 const { attachmentSchema: AttachmentSchema, launchSchema: LaunchSchema } =
   await import("../../src/agent/contracts.ts");
 /** The agent_runs tool records run inventories in its result details. */
-const RunResultDetailsSchema = Type.Object({
-  id: Type.String(),
-  sessionId: Type.String(),
-  status: Type.Optional(Type.String()),
-  sessionFile: Type.Optional(Type.String()),
-  model: Type.Optional(Type.String()),
-  thinking: Type.Optional(Type.String()),
-  command: Type.Optional(Type.String()),
-  receipt: Type.Optional(Type.String()),
-  stopRequest: Type.Optional(Type.String()),
-  stopAcknowledged: Type.Optional(Type.Boolean()),
-  parentSession: Type.Optional(Type.String()),
-  note: Type.Optional(Type.String()),
-  flag: Type.Optional(Type.String()),
-  completed: Type.Optional(Type.Boolean()),
-  lastWakeFailure: Type.Optional(Type.Object({ reason: Type.Optional(Type.String()) })),
-  contributions: Type.Optional(
-    Type.Array(Type.Object({ id: Type.String(), usage: Type.Unknown() })),
-  ),
-  output: Type.Optional(
-    Type.Object({ text: Type.String(), nextOffset: Type.Optional(Type.Integer()) }),
-  ),
-  nativeReceipt: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-  cwd: Type.Optional(Type.String()),
-  process: Type.Optional(
-    Type.Object({
-      live: Type.Optional(Type.Boolean()),
-      exitKnown: Type.Optional(Type.Boolean()),
-      exit: Type.Optional(
-        Type.Union([
-          Type.Object({
-            pid: Type.Optional(Type.Integer()),
-            code: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
-            signal: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-          }),
-          Type.Null(),
-        ]),
+const RunResultDetailsSchema = obj(
+  {
+    id: str(),
+    sessionId: str(),
+    status: opt(str()),
+    sessionFile: opt(str()),
+    model: opt(str()),
+    thinking: opt(str()),
+    command: opt(str()),
+    receipt: opt(str()),
+    stopRequest: opt(str()),
+    stopAcknowledged: opt(bool()),
+    parentSession: opt(str()),
+    note: opt(str()),
+    flag: opt(str()),
+    completed: opt(bool()),
+    lastWakeFailure: opt(obj({ reason: opt(str()) }, { open: true })),
+    contributions: opt(arr(obj({ id: str(), usage: unknown() }, { open: true }))),
+    output: opt(obj({ text: str(), nextOffset: opt(int()) }, { open: true })),
+    nativeReceipt: opt(nullable(str())),
+    cwd: opt(str()),
+    process: opt(
+      obj(
+        {
+          live: opt(bool()),
+          exitKnown: opt(bool()),
+          exit: opt(
+            nullable(
+              obj(
+                {
+                  pid: opt(int()),
+                  code: opt(nullable(int())),
+                  signal: opt(nullable(str())),
+                },
+                { open: true },
+              ),
+            ),
+          ),
+        },
+        { open: true },
       ),
-    }),
-  ),
-  result: Type.Optional(
-    Type.Object({
-      status: Type.Optional(Type.String()),
-      error: Type.Optional(Type.String()),
-      terminalEntryId: Type.Optional(Type.String()),
-      contributions: Type.Optional(
-        Type.Array(Type.Object({ id: Type.String(), usage: Type.Unknown() })),
+    ),
+    result: opt(
+      obj(
+        {
+          status: opt(str()),
+          error: opt(str()),
+          terminalEntryId: opt(str()),
+          contributions: opt(arr(obj({ id: str(), usage: unknown() }, { open: true }))),
+          accountingPending: opt(obj({ terminalCandidate: opt(str()) }, { open: true })),
+          accountingError: opt(unknown()),
+        },
+        { open: true },
       ),
-      accountingPending: Type.Optional(
-        Type.Object({ terminalCandidate: Type.Optional(Type.String()) }),
+    ),
+    context: opt(unknown()),
+    guidance: opt(arr(obj({ state: opt(str()) }, { open: true }))),
+    readOnly: opt(bool()),
+    waiting: opt(
+      obj(
+        {
+          since: num(),
+          work: arr(obj({ id: str(), description: str() }, { open: true })),
+        },
+        { open: true },
       ),
-      accountingError: Type.Optional(Type.Unknown()),
-    }),
-  ),
-  context: Type.Optional(Type.Unknown()),
-  guidance: Type.Optional(Type.Array(Type.Object({ state: Type.Optional(Type.String()) }))),
-  readOnly: Type.Optional(Type.Boolean()),
-  waiting: Type.Optional(
-    Type.Object({
-      since: Type.Number(),
-      work: Type.Array(Type.Object({ id: Type.String(), description: Type.String() })),
-    }),
-  ),
-});
+    ),
+  },
+  { open: true },
+);
+const RunResultDetailsValidator = compile(RunResultDetailsSchema);
 /** The validated agent_runs result details of a fixture tool result message. */
 const runDetails = (/** @type {{ details?: unknown }} */ receipt) => {
-  Assert(RunResultDetailsSchema, receipt.details);
+  assertValid(RunResultDetailsValidator, receipt.details);
   return receipt.details;
 };
 /** The agent_runs list inventory recorded in a fixture tool result's details. */
-const RunsInventorySchema = Type.Object({
-  runs: Type.Array(
-    Type.Object({
-      id: Type.String(),
-      sessionId: Type.String(),
-      completed: Type.Boolean(),
-      status: Type.Optional(Type.String()),
-      guidance: Type.Optional(Type.Array(Type.Object({ state: Type.Optional(Type.String()) }))),
-    }),
-  ),
-  nextOffset: Type.Optional(Type.Integer()),
-  total: Type.Optional(Type.Integer()),
-});
+const RunsInventorySchema = obj(
+  {
+    runs: arr(
+      obj(
+        {
+          id: str(),
+          sessionId: str(),
+          completed: bool(),
+          status: opt(str()),
+          guidance: opt(arr(obj({ state: opt(str()) }, { open: true }))),
+        },
+        { open: true },
+      ),
+    ),
+    nextOffset: opt(int()),
+    total: opt(int()),
+  },
+  { open: true },
+);
+const RunsInventoryValidator = compile(RunsInventorySchema);
 /** The digest the inventory phase's codemode script returns for its parsed list result. */
-const ScriptInventorySchema = Type.Object({
-  type: Type.String(),
-  bytes: Type.Integer(),
-  total: Type.Integer(),
-  offset: Type.Integer(),
-  nextOffset: Type.Optional(Type.Integer()),
-  ids: Type.Array(Type.String()),
-  guidance: Type.Array(Type.Array(Type.Unknown())),
-  fields: Type.Array(Type.String()),
-  running: Type.Object({
-    id: Type.String(),
-    name: Type.Optional(Type.String()),
-    status: Type.String(),
-    completed: Type.Boolean(),
-    process: Type.Object({ live: Type.Boolean() }),
-  }),
-  hasOutput: Type.Boolean(),
-  hasPrompt: Type.Boolean(),
-});
+const ScriptInventorySchema = obj(
+  {
+    type: str(),
+    bytes: int(),
+    total: int(),
+    offset: int(),
+    nextOffset: opt(int()),
+    ids: arr(str()),
+    guidance: arr(arr(unknown())),
+    fields: arr(str()),
+    running: obj(
+      {
+        id: str(),
+        name: opt(str()),
+        status: str(),
+        completed: bool(),
+        process: obj({ live: bool() }, { open: true }),
+      },
+      { open: true },
+    ),
+    hasOutput: bool(),
+    hasPrompt: bool(),
+  },
+  { open: true },
+);
 const runsDetails = (/** @type {{ details?: unknown }} */ receipt) => {
-  Assert(RunsInventorySchema, receipt.details);
+  assertValid(RunsInventoryValidator, receipt.details);
   return receipt.details;
 };
 /** Usage and continuation accounting recorded in a completion notice's details. */
-const UsageResultSchema = Type.Object({
-  contributions: Type.Array(Type.Object({ id: Type.String(), usage: Type.Unknown() })),
-  id: Type.String(),
-  owner: Type.String(),
-  status: Type.String(),
-  endedAt: Type.Unknown(),
-  terminalEntryId: Type.String(),
-});
-const UsageResultDetailsSchema = Type.Object({
-  sessionId: Type.String(),
-  sessionFile: Type.String(),
-  result: UsageResultSchema,
-});
+const UsageResultSchema = obj(
+  {
+    contributions: arr(obj({ id: str(), usage: unknown() }, { open: true })),
+    id: str(),
+    owner: str(),
+    status: str(),
+    endedAt: unknown(),
+    terminalEntryId: str(),
+  },
+  { open: true },
+);
+const UsageResultDetailsSchema = obj(
+  {
+    sessionId: str(),
+    sessionFile: str(),
+    result: UsageResultSchema,
+  },
+  { open: true },
+);
+const UsageResultDetailsValidator = compile(UsageResultDetailsSchema);
 const usageDetails = (/** @type {{ details?: unknown }} */ receipt) => {
-  Assert(UsageResultDetailsSchema, receipt.details);
+  assertValid(UsageResultDetailsValidator, receipt.details);
   return receipt.details;
 };
 /** Native actor start records published by the runtime under test. */
-const NativeStartSchema = Type.Object({ pid: Type.Integer(), sessionId: Type.String() });
+const NativeStartSchema = obj({ pid: int(), sessionId: str() }, { open: true });
 const nativeStarts = () =>
   publishedRecords("native-actor-starts.jsonl").map(validating(NativeStartSchema));
 /** Actor tick records published by the runtime under test. */
-const ActorTickSchema = Type.Object({ pid: Type.Integer() });
+const ActorTickSchema = obj({ pid: int() }, { open: true });
 const actorTicks = () => publishedRecords("actor-ticks.jsonl").map(validating(ActorTickSchema));
 /** Command poll records published by the runtime under test. */
-const CommandPollSchema = Type.Object({
-  pid: Type.Integer(),
-  reads: Type.Array(
-    Type.Object({
-      file: Type.Optional(Type.String()),
-      position: Type.Optional(Type.Integer()),
-      count: Type.Optional(Type.Integer()),
-      pid: Type.Optional(Type.Integer()),
-      opens: Type.Optional(Type.Integer()),
-      bytes: Type.Optional(Type.Integer()),
-    }),
-  ),
-});
+const CommandPollSchema = obj(
+  {
+    pid: int(),
+    reads: arr(
+      obj(
+        {
+          file: opt(str()),
+          position: opt(int()),
+          count: opt(int()),
+          pid: opt(int()),
+          opens: opt(int()),
+          bytes: opt(int()),
+        },
+        { open: true },
+      ),
+    ),
+  },
+  { open: true },
+);
 /** Shell poll records published by the runtime under test. */
-const ShellPollSchema = Type.Object({
-  scans: Type.Integer(),
-  opens: Type.Array(Type.String()),
-});
+const ShellPollSchema = obj(
+  {
+    scans: int(),
+    opens: arr(str()),
+  },
+  { open: true },
+);
 const commandPolls = () =>
   publishedRecords("command-polls.jsonl").map(validating(CommandPollSchema));
 const shellPolls = () => publishedRecords("shell-polls.jsonl").map(validating(ShellPollSchema));
 /** Journal read records published by the runtime under test. */
-const JournalReadSchema = Type.Object({
-  file: Type.String(),
-  pid: Type.Integer(),
-  position: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
-  count: Type.Integer(),
-});
+const JournalReadSchema = obj(
+  {
+    file: str(),
+    pid: int(),
+    position: opt(nullable(int())),
+    count: int(),
+  },
+  { open: true },
+);
 const journalReads = () =>
   publishedRecords("journal-reads.jsonl").map(validating(JournalReadSchema));
 /** The single published request carrying the given prompt, asserted loudly. */
-/** @returns {import("typebox").Static<typeof RequestRecordSchema>} */
+/** @returns {import("@earendil-works/pi-schema").Static<typeof RequestRecordSchema>} */
 const requestFor = (/** @type {string} */ prompt) => {
   const found = requests().find((request) => request.prompt === prompt);
   assert.ok(found !== undefined, `expected a published request for ${prompt}`);
@@ -868,7 +932,7 @@ const firstRequest = () => {
   return found;
 };
 /** The most recent published request, asserted loudly. */
-/** @returns {import("typebox").Static<typeof RequestRecordSchema>} */
+/** @returns {import("@earendil-works/pi-schema").Static<typeof RequestRecordSchema>} */
 const lastRequest = () => {
   const found = requests().at(-1);
   assert.ok(found !== undefined, "expected a published request");
@@ -880,44 +944,59 @@ const currentRunId = () => {
   return runId;
 };
 /** Parked-authority metadata recorded at handoff. */
-const ParkedAuthoritySchema = Type.Object({
-  state: Type.String(),
-  digest: Type.String(),
-  sessionId: Type.String(),
-  leafId: Type.String(),
-});
+const ParkedAuthoritySchema = obj(
+  {
+    state: str(),
+    digest: str(),
+    sessionId: str(),
+    leafId: str(),
+  },
+  { open: true },
+);
 /** Parked run metadata recorded at handoff. */
-const ParkedRunSchema = Type.Object({ token: Type.String(), state: Type.String() });
+const ParkedRunSchema = obj({ token: str(), state: str() }, { open: true });
 /** A recorded wake-failure witness. */
-const WitnessSchema = Type.Object({ beforeOpen: Type.Unknown() });
+const WitnessSchema = obj({ beforeOpen: unknown() }, { open: true });
 /** Preparation-fault evidence retained by the runtime. */
-const FaultSchema = Type.Object({ file: Type.String(), retained: Type.String() });
+const FaultSchema = obj({ file: str(), retained: str() }, { open: true });
 /** A queued native command record. */
-const CommandRecordSchema = Type.Object({
-  prompt: Type.Optional(Type.String()),
-  action: Type.Optional(Type.String()),
-  actorToken: Type.Optional(Type.String()),
-});
+const CommandRecordSchema = obj(
+  {
+    prompt: opt(str()),
+    action: opt(str()),
+    actorToken: opt(str()),
+  },
+  { open: true },
+);
 /** A published nested tool result. */
-const NestedResultSchema = Type.Object({ isError: Type.Boolean() });
+const NestedResultSchema = obj({ isError: bool() }, { open: true });
 /** Session journal entries in retained fault evidence. */
-const JournalEntrySchema = Type.Object({
-  type: Type.Optional(Type.String()),
-  parentSession: Type.Optional(Type.String()),
-  cacheSessionId: Type.Optional(Type.String()),
-  message: Type.Optional(Type.Object({ role: Type.Optional(Type.String()) })),
-});
+const JournalEntrySchema = obj(
+  {
+    type: opt(str()),
+    parentSession: opt(str()),
+    cacheSessionId: opt(str()),
+    message: opt(obj({ role: opt(str()) }, { open: true })),
+  },
+  { open: true },
+);
 /** Subagent notify entries in a physical journal. */
-const NotifyEntrySchema = Type.Object({
-  type: Type.Optional(Type.String()),
-  customType: Type.Optional(Type.String()),
-  details: Type.Object({
-    id: Type.Optional(Type.String()),
-    owner: Type.Optional(Type.String()),
-    completed: Type.Optional(Type.Boolean()),
-    completion: Type.Object({ ownerSessionId: Type.String() }),
-  }),
-});
+const NotifyEntrySchema = obj(
+  {
+    type: opt(str()),
+    customType: opt(str()),
+    details: obj(
+      {
+        id: opt(str()),
+        owner: opt(str()),
+        completed: opt(bool()),
+        completion: obj({ ownerSessionId: str() }, { open: true }),
+      },
+      { open: true },
+    ),
+  },
+  { open: true },
+);
 /**
  * @param {import("@earendil-works/pi-coding-agent").SessionEntry} entry
  * @returns {entry is import("@earendil-works/pi-coding-agent").SessionMessageEntry & {
@@ -948,71 +1027,113 @@ const contentText = (/** @type {{ content: { type?: string, text?: string }[] }}
   return first.text ?? "";
 };
 /** Intercom entries in a child journal. */
-const IntercomJournalEntrySchema = Type.Object({
-  type: Type.Optional(Type.String()),
-  customType: Type.Optional(Type.String()),
-  details: Type.Object({ message: Type.Object({ content: Type.Object({ text: Type.String() }) }) }),
-});
+const IntercomJournalEntrySchema = obj(
+  {
+    type: opt(str()),
+    customType: opt(str()),
+    details: obj(
+      { message: obj({ content: obj({ text: str() }, { open: true }) }, { open: true }) },
+      { open: true },
+    ),
+  },
+  { open: true },
+);
 /** Published completion notice entries in a physical child journal. */
-const CompletionNoticeSchema = Type.Object({
-  type: Type.Optional(Type.String()),
-  customType: Type.Optional(Type.String()),
-  details: Type.Object({
-    id: Type.String(),
-    owner: Type.Optional(Type.String()),
-    completed: Type.Optional(Type.Boolean()),
-    result: Type.Optional(UsageResultSchema),
-  }),
-});
+const CompletionNoticeSchema = obj(
+  {
+    type: opt(str()),
+    customType: opt(str()),
+    details: obj(
+      {
+        id: str(),
+        owner: opt(str()),
+        completed: opt(bool()),
+        result: opt(UsageResultSchema),
+      },
+      { open: true },
+    ),
+  },
+  { open: true },
+);
 /** An admission receipt for a queued native command. */
-const AdmissionSchema = Type.Object({
-  id: Type.Optional(Type.String()),
-  action: Type.Optional(Type.String()),
-  runId: Type.Optional(Type.String()),
-  state: Type.Optional(Type.Union([Type.Literal("accepted"), Type.Literal("stale")])),
-  at: Type.Optional(Type.Number()),
-});
+const AdmissionSchema = obj(
+  {
+    id: opt(str()),
+    action: opt(str()),
+    runId: opt(str()),
+    state: opt(oneOf(["accepted", "stale"])),
+    at: opt(num()),
+  },
+  { open: true },
+);
 /** A recorded actor exit event. */
-const ExitSchema = Type.Object({ code: Type.Optional(Type.Integer()) });
+const ExitSchema = obj({ code: opt(int()) }, { open: true });
 /** A run's recorded result summary. */
-const ResultSchema = Type.Object({
-  status: Type.String(),
-  terminalEntryId: Type.Optional(Type.String()),
-  contributions: Type.Optional(Type.Array(Type.Unknown())),
-  accountingPending: Type.Optional(
-    Type.Object({ terminalCandidate: Type.Optional(Type.String()) }),
-  ),
-  accountingError: Type.Optional(Type.String()),
-});
+const ResultSchema = obj(
+  {
+    status: str(),
+    terminalEntryId: opt(str()),
+    contributions: opt(arr(unknown())),
+    accountingPending: opt(obj({ terminalCandidate: opt(str()) }, { open: true })),
+    accountingError: opt(str()),
+  },
+  { open: true },
+);
 /** A recorded native spawn failure. */
-const SpawnErrorSchema = Type.Object({ error: Type.String() });
+const SpawnErrorSchema = obj({ error: str() }, { open: true });
 /** A delayed read marker file. */
-const DelayedReadSchema = Type.Object({ file: Type.String() });
+const DelayedReadSchema = obj({ file: str() }, { open: true });
 /** A run's recorded successor run id. */
-const SuccessorSchema = Type.Object({ id: Type.String() });
+const SuccessorSchema = obj({ id: str() }, { open: true });
 /** A run's readiness record. */
-const ReadySchema = Type.Object({ token: Type.String(), pid: Type.Optional(Type.Integer()) });
+const ReadySchema = obj({ token: str(), pid: opt(int()) }, { open: true });
 /** An actor lock's claim record. */
-const ClaimSchema = Type.Object({ token: Type.String() });
+const ClaimSchema = obj({ token: str() }, { open: true });
 /** Agent settings written by the fixture and runtime. */
-const SettingsSchema = Type.Object({
-  extensions: Type.Array(Type.String()),
-  defaultProjectTrust: Type.Optional(Type.String()),
-});
+const SettingsSchema = obj(
+  {
+    extensions: arr(str()),
+    defaultProjectTrust: opt(str()),
+  },
+  { open: true },
+);
 /** Session journal header line: type, working directory, session id. */
-const SessionHeaderSchema = Type.Object({
-  type: Type.Optional(Type.String()),
-  cwd: Type.Optional(Type.String()),
-  id: Type.Optional(Type.String()),
-});
+const SessionHeaderSchema = obj(
+  {
+    type: opt(str()),
+    cwd: opt(str()),
+    id: opt(str()),
+  },
+  { open: true },
+);
 /** Physical session journal entries written by the runtime. */
-const PhysicalEntrySchema = Type.Object({
-  type: Type.Optional(Type.String()),
-  id: Type.Optional(Type.String()),
-  customType: Type.Optional(Type.String()),
-  details: Type.Optional(Type.Unknown()),
-  message: Type.Optional(Type.Object({ role: Type.Optional(Type.String()) })),
-});
+const PhysicalEntrySchema = obj(
+  {
+    type: opt(str()),
+    id: opt(str()),
+    customType: opt(str()),
+    details: opt(unknown()),
+    message: opt(obj({ role: opt(str()) }, { open: true })),
+  },
+  { open: true },
+);
+const StatusSchema = obj({ status: str() }, { open: true });
+const ExitOutcomeSchema = obj(
+  {
+    code: nullable(int()),
+    signal: nullable(str()),
+  },
+  { open: true },
+);
+const NumericExitOutcomeSchema = obj(
+  {
+    code: nullable(num()),
+    signal: nullable(str()),
+  },
+  { open: true },
+);
+const AttachmentPidSchema = obj({ pid: int(), identity: opt(str()) }, { open: true });
+const ResultEnvelopeSchema = obj({ result: unknown() }, { open: true });
 const publishedFiles = (/** @type {string} */ directory) =>
   fs.readdirSync(directory).filter((name) => name.endsWith(".json"));
 /** Parked authority is the digest of every saved byte, read without waking the child. */
@@ -1207,13 +1328,14 @@ async function failedSdkWake(/** @type {string} */ parked, /** @type {string} */
   );
 }
 /** A text entry of a child's native journal. */
-const ChildEntrySchema = Type.Object({
-  type: Type.Optional(Type.String()),
-  id: Type.Optional(Type.String()),
-  message: Type.Optional(
-    Type.Object({ role: Type.Optional(Type.String()), content: Type.Optional(Type.Unknown()) }),
-  ),
-});
+const ChildEntrySchema = obj(
+  {
+    type: opt(str()),
+    id: opt(str()),
+    message: opt(obj({ role: opt(str()), content: opt(unknown()) }, { open: true })),
+  },
+  { open: true },
+);
 /** The published assistant entries of a run's native journal, with their text. */
 const childAssistants = (/** @type {string} */ id) =>
   fs
@@ -1403,7 +1525,7 @@ async function stopBackgroundWork(/** @type {string} */ id, /** @type {string} *
   const launch = readValidated(LaunchSchema, path.join(runDir(id), "launch.json"));
   const state = () =>
     readValidated(
-      Type.Object({ status: Type.String() }),
+      StatusSchema,
       path.join(
         path.dirname(launch.sessionFile),
         "background-commands",
@@ -1456,13 +1578,7 @@ async function stopBackgroundWork(/** @type {string} */ id, /** @type {string} *
   assert.equal(notices().length, 1);
   const exitFile = path.join(runDir(id), `exit-${actor.token}.json`);
   await until(() => fs.existsSync(exitFile), "the parent records the actor's exit");
-  const exit = readValidated(
-    Type.Object({
-      code: Type.Union([Type.Integer(), Type.Null()]),
-      signal: Type.Union([Type.String(), Type.Null()]),
-    }),
-    exitFile,
-  );
+  const exit = readValidated(ExitOutcomeSchema, exitFile);
   console.log(JSON.stringify({ stopElapsedMs: elapsed, actorExit: exit }));
 }
 let runId = seed?.runId;
@@ -3128,10 +3244,7 @@ try {
       await (phase === "bash-shutdown-timezone" ? stopAcrossZones() : stopWithStaleClaims());
     } else if (phase === "bash-parent-reuse") {
       const file = path.join(path.dirname(runDir(currentRunId())), "attachment.json");
-      const attachment = readValidated(
-        Type.Object({ pid: Type.Integer(), identity: Type.Optional(Type.String()) }),
-        file,
-      );
+      const attachment = readValidated(AttachmentPidSchema, file);
       const publishedAt = fs.statSync(file).mtime;
       assert.equal(attachment.pid, process.pid);
       assert.equal(processView(process.pid).group, process.pid, "parent leads its native group");
@@ -5035,7 +5148,7 @@ try {
         }),
       );
       assert.deepEqual(
-        parseValidated(Type.Object({ result: Type.Unknown() }), text).result,
+        parseValidated(ResultEnvelopeSchema, text).result,
         {
           id: runId,
           owner: manager.getSessionId(),
@@ -5191,8 +5304,9 @@ try {
       "the resident continuation records exactly its appended native turns",
     );
     const warmReads = journalReads().slice(coldReads.length);
-    const bytes = (/** @type {import("typebox").Static<typeof JournalReadSchema>[]} */ reads) =>
-      reads.filter((read) => read.pid === actor).reduce((sum, read) => sum + read.count, 0);
+    const bytes = (
+      /** @type {import("@earendil-works/pi-schema").Static<typeof JournalReadSchema>[]} */ reads,
+    ) => reads.filter((read) => read.pid === actor).reduce((sum, read) => sum + read.count, 0);
     console.log(
       JSON.stringify({
         projection: "child journal reads",
@@ -5245,13 +5359,7 @@ try {
     );
     const exitFile = path.join(runDir(id), `exit-${actor.token}.json`);
     await until(() => fs.existsSync(exitFile), "the stopped actor exits");
-    const exit = readValidated(
-      Type.Object({
-        code: Type.Union([Type.Integer(), Type.Null()]),
-        signal: Type.Union([Type.String(), Type.Null()]),
-      }),
-      exitFile,
-    );
+    const exit = readValidated(ExitOutcomeSchema, exitFile);
     assert.equal(exit.signal, null, "no deadline escalation was needed");
     assert.equal(exit.code, 0, "the fenced actor exits cleanly");
   } else if (phase === "delegate-cancel-after-preparation") {
@@ -5405,13 +5513,7 @@ try {
     }, "the finished actor exits despite the extension's retained filesystem watcher");
     const exit = path.join(runDir(id), `exit-${actor.token}.json`);
     await until(() => fs.existsSync(exit), "the launcher publishes the actor's actual exit");
-    const exited = readValidated(
-      Type.Object({
-        code: Type.Union([Type.Number(), Type.Null()]),
-        signal: Type.Union([Type.String(), Type.Null()]),
-      }),
-      exit,
-    );
+    const exited = readValidated(NumericExitOutcomeSchema, exit);
     assert.deepEqual(
       [exited.code, exited.signal],
       [0, null],

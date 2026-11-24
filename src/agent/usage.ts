@@ -1,10 +1,11 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { compile } from "@earendil-works/pi-schema";
 import { journalStamp, nativeAppend } from "../shared/native-journal.ts";
 import { nativeProjection } from "../shared/journal-projections.ts";
 import { scanJournal } from "../shared/journal-frames.ts";
+import { assertValid } from "../shared/schema.ts";
 import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
-import { Assert } from "./typebox.ts";
 import {
   contributionsSchema,
   resultSchema,
@@ -14,6 +15,8 @@ import {
   type Result,
 } from "./contracts.ts";
 import { read, runDirectory, write } from "./storage.ts";
+
+const contributionsValidator = compile(contributionsSchema);
 
 /** Pending repair remains authoritative until its native terminal is published and validated. */
 export function accountingState(result: Result | undefined): AccountingState {
@@ -178,7 +181,7 @@ export class UsageIndex {
       if (prefix.header === undefined || (terminal !== undefined && !ended)) {
         throw new Error("Native terminal or session identity is not LF-published.");
       }
-      Assert(contributionsSchema, values);
+      assertValid(contributionsValidator, values);
       prefix.stat = stat;
       this.prefix = prefix;
       return values;

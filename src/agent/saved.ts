@@ -2,43 +2,70 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Static } from "typebox";
+import {
+  bool,
+  compile,
+  int,
+  lit,
+  obj,
+  oneOf,
+  opt,
+  str,
+  tuple,
+  type Static,
+} from "@earendil-works/pi-schema";
 import { NativeJournal } from "../shared/native-journal.ts";
+import { assertValid } from "../shared/schema.ts";
 import { isRecord } from "../shared/unknown.ts";
-import { Assert, Type } from "./typebox.ts";
 import { thinkingSchema, successorSchema, type Launch, type OverseerLaunch } from "./contracts.ts";
 import { packageRoot, runtimeEntry } from "./host.ts";
 import { launchAt, read, runDirectory, safeId, write } from "./storage.ts";
 
-const configuration = Type.Object({
-  model: Type.Optional(Type.String()),
-  thinking: Type.Optional(thinkingSchema),
-});
-const contractSchema = Type.Object({
-  sessionFile: Type.String({ minLength: 1 }),
-  nativeSessionId: Type.Optional(Type.String()),
-  pid: Type.Optional(Type.Integer({ minimum: 1 })),
-  effectiveConfiguration: Type.Optional(configuration),
-  launch: Type.Object({
-    model: Type.Optional(Type.String()),
-    thinking: Type.Optional(thinkingSchema),
-    cwd: Type.String({ minLength: 1 }),
-    context: Type.Union([Type.Literal("fresh"), Type.Literal("fork")]),
-    projectTrusted: Type.Optional(Type.Boolean()),
-  }),
-});
-const ownerSchema = Type.Object({ sessionId: Type.String() });
-const singleSchema = Type.Object({
-  ownerSessionId: Type.String(),
-  mode: Type.Literal("single"),
-  pid: Type.Optional(Type.Integer({ minimum: 1 })),
-  children: Type.Tuple([
-    Type.Object({
-      index: Type.Literal(0),
-      sessionFile: Type.Optional(Type.String()),
-    }),
-  ]),
-});
+const configuration = obj(
+  {
+    model: opt(str()),
+    thinking: opt(thinkingSchema),
+  },
+  { open: true },
+);
+const contractSchema = obj(
+  {
+    sessionFile: str({ minLength: 1 }),
+    nativeSessionId: opt(str()),
+    pid: opt(int({ minimum: 1 })),
+    effectiveConfiguration: opt(configuration),
+    launch: obj(
+      {
+        model: opt(str()),
+        thinking: opt(thinkingSchema),
+        cwd: str({ minLength: 1 }),
+        context: oneOf(["fresh", "fork"]),
+        projectTrusted: opt(bool()),
+      },
+      { open: true },
+    ),
+  },
+  { open: true },
+);
+const ownerSchema = obj({ sessionId: str() }, { open: true });
+const singleSchema = obj(
+  {
+    ownerSessionId: str(),
+    mode: lit("single"),
+    pid: opt(int({ minimum: 1 })),
+    children: tuple([
+      obj(
+        {
+          index: lit(0),
+          sessionFile: opt(str()),
+        },
+        { open: true },
+      ),
+    ]),
+  },
+  { open: true },
+);
+const singleValidator = compile(singleSchema);
 type Contract = Static<typeof contractSchema>;
 
 function ownedRun(context: ExtensionContext, id: string) {
@@ -55,7 +82,7 @@ function ownedRun(context: ExtensionContext, id: string) {
   if (owned?.ownerSessionId !== context.sessionManager.getSessionId()) {
     throw new Error("Missing saved native owner or foreign legacy run; nothing was launched.");
   }
-  Assert(singleSchema, owned);
+  assertValid(singleValidator, owned);
   return owned;
 }
 
