@@ -26,6 +26,7 @@ import { DirectoryWatch } from "./wake.ts";
  * 1. Claude Haiku 5.5 (4/4 live, $0.10/$0.50 per 1M, 0 false positives)
  * 2. GPT-6 Luna at medium reasoning (~5s, $0.10/$0.50 per 1M)
  * 3. Gemini 3.8 Flash at medium reasoning (4/4 live, $0.75/$3.75 per 1M)
+ * 4. Gemini 4 Hydrogen at medium reasoning (Gemini 4 fallback when 3.8 Flash is unavailable)
  */
 const PREFERRED_AUTO_SKEPTICS: readonly (readonly [string, string, ThinkingLevel | undefined])[] = [
   ["cloudflare-ai-gateway", "claude-haiku-5-5", undefined],
@@ -33,6 +34,7 @@ const PREFERRED_AUTO_SKEPTICS: readonly (readonly [string, string, ThinkingLevel
   ["cloudflare-ai-gateway", "gpt-6-luna", "medium"],
   ["openai", "gpt-6-luna", "medium"],
   ["google", "gemini-3.8-flash", "medium"],
+  ["google", "gemini-4-hydrogen", "medium"],
 ];
 
 export const MIN_EXCERPT_CHARS = 6;

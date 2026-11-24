@@ -1,6 +1,11 @@
 import * as fs from "node:fs";
+import { findPackageJSON } from "node:module";
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
   CreateAgentSessionRuntimeFactory,
+  Extension,
   ExtensionAPI,
   ExtensionContext,
   SettingsManager,
@@ -15,6 +20,99 @@ import type { OverseerSentinel } from "./overseer-sentinel.ts";
 import { recordAt, type UnknownRecord } from "../shared/unknown.ts";
 
 const EDIT_TOOLS = new Set(["edit", "write", "replace_text", "write_files", "apply_patch"]);
+const CHILD_GUARDED_TOOLS = new Set(["delegate", "agent_runs"]);
+const NON_MID_CONVO_TOOL_APIS = new Set([
+  "google-generative-ai",
+  "google-vertex",
+  "bedrock-converse-stream",
+]);
+const RESPONSES_TOOL_APIS = new Set([
+  "openai-responses",
+  "openai-codex-responses",
+  "azure-openai-responses",
+]);
+
+type MidConvoToolSupportFn = (model: Model<Api>) => unknown;
+const hostToolSupportCache = new Map<string, Promise<MidConvoToolSupportFn | undefined>>();
+
+async function loadHostMidConvoToolSupport(
+  sdkRoot: string,
+): Promise<MidConvoToolSupportFn | undefined> {
+  const cached = hostToolSupportCache.get(sdkRoot);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const loader = (async (): Promise<MidConvoToolSupportFn | undefined> => {
+    try {
+      const manifest = findPackageJSON(
+        "@earendil-works/pi-ai",
+        pathToFileURL(path.join(sdkRoot, "dist/index.js")),
+      );
+      if (manifest === undefined) {
+        return undefined;
+      }
+      const entry = pathToFileURL(path.join(path.dirname(manifest), "dist/index.js")).href;
+      const mod: unknown = await import(entry);
+      const fn: unknown =
+        typeof mod === "object" && mod !== null
+          ? Reflect.get(mod, "getMidConvoToolSupport")
+          : undefined;
+      return typeof fn === "function"
+        ? (model): unknown => {
+            const result: unknown = Reflect.apply(fn, mod, [model]);
+            return result;
+          }
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  hostToolSupportCache.set(sdkRoot, loader);
+  return loader;
+}
+
+function supportsMidConvoToolChanges(
+  model: Model<Api>,
+  sharedSupport: MidConvoToolSupportFn | undefined,
+): boolean {
+  if (sharedSupport !== undefined) {
+    return sharedSupport(model) === "changes";
+  }
+  // Fallback for @earendil-works/pi-ai hosts that do not export getMidConvoToolSupport.
+  if (NON_MID_CONVO_TOOL_APIS.has(model.api)) {
+    return false;
+  }
+  const compat = recordAt(model, "compat");
+  if (!compat || compat.supportsMidConvoSystemMessages !== true) {
+    return false;
+  }
+  if (RESPONSES_TOOL_APIS.has(model.api)) {
+    return compat.supportsAdditionalTools === true;
+  }
+  return compat.supportsMidConvoToolChanges === true;
+}
+
+function shouldPreserveParentTools(
+  launch: Pick<Launch, "context">,
+  model: Model<Api>,
+  sharedSupport: MidConvoToolSupportFn | undefined,
+): boolean {
+  return launch.context === "fork" && !supportsMidConvoToolChanges(model, sharedSupport);
+}
+
+function exposeGuardedTools(extensions: readonly Extension[]): void {
+  for (const extension of extensions) {
+    for (const name of CHILD_GUARDED_TOOLS) {
+      const registered = extension.tools.get(name);
+      if (registered?.definition.exposure === "hidden") {
+        extension.tools.set(name, {
+          ...registered,
+          definition: { ...registered.definition, exposure: "direct" },
+        });
+      }
+    }
+  }
+}
 
 function rewriteLocalBash(
   pi: ExtensionAPI,
@@ -146,7 +244,6 @@ export function childRuntime(
         ],
       },
     });
-    exposeChildTools(services.settingsManager);
     const diagnostics = services.resourceLoader.getExtensions().errors;
     if (diagnostics.length > 0) {
       throw new Error(`Child extension load failed: ${JSON.stringify(diagnostics)}`);
@@ -156,6 +253,12 @@ export function childRuntime(
       throw new Error(
         `Saved model ${launch.provider}/${launch.model} is unavailable; no fallback was used.`,
       );
+    }
+    exposeChildTools(services.settingsManager);
+    const sharedToolSupport =
+      launch.context === "fork" ? await loadHostMidConvoToolSupport(launch.sdk) : undefined;
+    if (shouldPreserveParentTools(launch, model, sharedToolSupport)) {
+      exposeGuardedTools(services.resourceLoader.getExtensions().extensions);
     }
     return {
       ...(await sdk.createAgentSessionFromServices({

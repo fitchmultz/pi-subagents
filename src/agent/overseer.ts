@@ -400,6 +400,7 @@ export class OverseerController {
           "cloudflare-ai-gateway/claude-haiku-5-5",
           "cloudflare-ai-gateway/gpt-6-luna:medium",
           "google/gemini-3.8-flash:medium",
+          "google/gemini-4-hydrogen:medium",
         ]),
       handler: (args, ctx) => {
         this.onJudge(args, ctx);

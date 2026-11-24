@@ -56,8 +56,9 @@ When enabled:
   1. **Early shape check:** once per editing run on the first mutating turn that modifies the
      working tree so the parent can course-correct while pivots are cheap.
   2. **Grounded skeptic (mid-flight):** a fast reasoning model (`claude-haiku-5-5` →
-     `gpt-6-luna:medium` → `gemini-3.8-flash:medium` on `auto`, or any `provider/model[:thinking]`
-     via `/overseer-judge`) scans new diffs against the owner's intent, child task, and guidance.
+     `gpt-6-luna:medium` → `gemini-3.8-flash:medium` → `gemini-4-hydrogen:medium` on `auto`, or
+     any `provider/model[:thinking]` via `/overseer-judge`) scans new diffs against the owner's
+     intent, child task, and guidance.
      Every finding is validated in code against the real diff (`file` + literal `excerpt`);
      ungrounded findings are dropped automatically so content-free pauses cannot happen.
      Blocking findings pause the child; non-blocking findings send a quiet FYI note while it runs.

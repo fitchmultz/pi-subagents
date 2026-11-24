@@ -30,6 +30,8 @@ import {
 import { readEscalation, resolveActiveEscalation } from "../../src/agent/overseer-pause.ts";
 import {
   evaluateLiveSkeptic,
+  modelLabel,
+  resolveCandidates,
   validateGroundedFindings,
   type SkepticModelRegistry,
 } from "../../src/agent/overseer-skeptic.ts";
@@ -325,6 +327,45 @@ nodeDescribe("overseer-skeptic grounding and fallback", () => {
   });
 
   nodeIt(
+    "orders google/gemini-4-hydrogen:medium after gemini-3.8-flash and falls back to it when earlier candidates are unavailable",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-g4-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      const launch = makeLaunch(base, repo);
+
+      const flash38 = makeModel("google", "gemini-3.8-flash", true);
+      const hydrogen = makeModel("google", "gemini-4-hydrogen", true);
+
+      const bothRegistry = makeStreamRegistry([hydrogen, flash38], async () =>
+        fakeAssistant(JSON.stringify({ action: "ok", findings: [] })),
+      );
+      const ordered = resolveCandidates(bothRegistry, "auto", new Set());
+      assert.deepEqual(
+        ordered.map((c) => modelLabel(c.model, c.thinking)),
+        ["google/gemini-3.8-flash:medium", "google/gemini-4-hydrogen:medium"],
+      );
+
+      const fallbackRegistry = makeStreamRegistry([hydrogen], async () =>
+        fakeAssistant(JSON.stringify({ action: "ok", findings: [] })),
+      );
+      const outcome = await evaluateLiveSkeptic(base, launch, {
+        modelRegistry: fallbackRegistry,
+        judgeSpec: "auto",
+        ownerContext: undefined,
+        taskPrompt: launch.prompt,
+        guidance: [],
+        changedFiles: ["src/recovery.ts"],
+        diff: sampleDiff,
+        failed: new Set(),
+        signal: undefined,
+      });
+      assert.equal(outcome.kind, "verdict");
+      assert.equal(outcome.verdict.model, "google/gemini-4-hydrogen:medium");
+    },
+  );
+
+  nodeIt(
     "aborts an in-flight skeptic request when overseer judge is toggled off live",
     async (t) => {
       const repo = initGitRepo(t);
@@ -448,6 +489,14 @@ nodeDescribe("overseer controller & owner context", () => {
       await command.handler("on", native.session.extensionRunner.createCommandContext());
       const prepared = controller.prepareDelegation({ prompt: "Build feature X" });
       assert.deepEqual(prepared, { overseer: { enabled: true, judge: "auto" } });
+
+      const judgeCmd = native.extensions[0]?.commands.get("overseer-judge");
+      const completionItems = await judgeCmd?.getArgumentCompletions?.("google/");
+      const googleCompletions = completionItems?.map((c) => c.value);
+      assert.deepEqual(googleCompletions, [
+        "google/gemini-3.8-flash:medium",
+        "google/gemini-4-hydrogen:medium",
+      ]);
 
       const ownerContext = captureOwnerContext({
         getBranch: () =>
