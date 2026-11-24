@@ -21,16 +21,16 @@ import { activeOverseer, OVERSEER_STATE_FILE, splitModelSpec } from "./overseer.
 import { DirectoryWatch } from "./wake.ts";
 
 /**
- * Default auto fallback order, measured against real drift cases (pi-posthorse#224,
- * PIF-204 5-minute timer) and clean routine edits:
- * 1. Claude Haiku 5.5 (4/4 live, $0.10/$0.50 per 1M, 0 false positives)
+ * Default auto fallback order, measured against real child drift cases (pi-posthorse#224,
+ * PIF-204 5-minute timer) and a 42-case real-session parent-skeptic replay benchmark:
+ * 1. Claude Haiku 5.5 at low reasoning (0/28 parent FPs, 13/14 TPs flagged, p50 ~3.1s, $0.10/$0.50 per 1M)
  * 2. GPT-6 Luna at medium reasoning (~5s, $0.10/$0.50 per 1M)
  * 3. Gemini 3.8 Flash at medium reasoning (4/4 live, $0.75/$3.75 per 1M)
  * 4. Gemini 4 Hydrogen at medium reasoning (Gemini 4 fallback when 3.8 Flash is unavailable)
  */
 const PREFERRED_AUTO_SKEPTICS: readonly (readonly [string, string, ThinkingLevel | undefined])[] = [
-  ["cloudflare-ai-gateway", "claude-haiku-5-5", undefined],
-  ["anthropic", "claude-haiku-5-5", undefined],
+  ["cloudflare-ai-gateway", "claude-haiku-5-5", "low"],
+  ["anthropic", "claude-haiku-5-5", "low"],
   ["cloudflare-ai-gateway", "gpt-6-luna", "medium"],
   ["openai", "gpt-6-luna", "medium"],
   ["google", "gemini-3.8-flash", "medium"],
@@ -105,6 +105,7 @@ export type LiveSkepticOutcome =
 const SKEPTIC_SYSTEM_PROMPT = [
   "You are a grounded code skeptic overseeing a child coding agent on behalf of its parent agent and owner.",
   "Review ONLY the unified git diff provided against the owner intent, child task, and later guidance.",
+  "In Owner intent (parent session), newest owner decisions across both `[Owner]` chat messages and `[Owner answered ask_question]` answers supersede earlier ones; `[Assistant before owner reply]` provides context for short owner replies.",
   "Children are free to solve problems their own way. Do NOT flag routine in-progress work, helper extractions, style preferences, or missing tests/docs while work is unfinished.",
   "Judge only what is proven by the diff itself. Do not speculate about fixtures, helpers, or setup defined outside the shown hunks.",
   "Flag ONLY concrete, high-signal issues: intent_drift, invented_constraint, dropped_behavior, custom_plumbing, weakened_test, or bug.",
@@ -219,7 +220,7 @@ export function validateGroundedFindings(
   if (!parsed.ok) {
     return { ok: false, reason: "response JSON did not match skeptic schema" };
   }
-  if (parsed.value.action === "ok" || parsed.value.findings.length === 0) {
+  if (parsed.value.findings.length === 0) {
     return { ok: true, blocking: [], notes: [], droppedUngrounded: 0 };
   }
   const changed = new Set(changedFiles.map(cleanPath));
@@ -227,6 +228,7 @@ export function validateGroundedFindings(
   const blocking: SkepticFinding[] = [];
   const notes: SkepticFinding[] = [];
   let droppedUngrounded = 0;
+  const allowBlocking = parsed.value.action === "flag";
   for (const finding of parsed.value.findings) {
     if (!isFindingGrounded(finding, changed, sections, diff)) {
       droppedUngrounded += 1;
@@ -237,6 +239,7 @@ export function validateGroundedFindings(
       file: cleanPath(finding.file),
       excerpt: normalizeExcerpt(finding.excerpt),
       why: finding.why.trim(),
+      blocking: allowBlocking && finding.blocking,
     };
     (clean.blocking ? blocking : notes).push(clean);
   }

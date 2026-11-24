@@ -55,7 +55,7 @@ When enabled:
   since the parent last looked"):
   1. **Early shape check:** once per editing run on the first mutating turn that modifies the
      working tree so the parent can course-correct while pivots are cheap.
-  2. **Grounded skeptic (mid-flight):** a fast reasoning model (`claude-haiku-5-5` →
+  2. **Grounded skeptic (mid-flight):** a fast reasoning model (`claude-haiku-5-5:low` →
      `gpt-6-luna:medium` → `gemini-3.8-flash:medium` → `gemini-4-hydrogen:medium` on `auto`, or
      any `provider/model[:thinking]` via `/overseer-judge`) scans new diffs against the owner's
      intent, child task, and guidance.
@@ -65,11 +65,19 @@ When enabled:
   3. **Pre-ship final diff check:** right before settling, if changes remain since the parent's
      last checkpoint, the child pauses so the parent sees the final diff before completion.
 - **Parent-side skeptic (main session):** before `delegate`, `agent_runs({ action: "continue", prompt })`,
-  or high-impact shell commands (`gh pr merge`, `git push`, `git reset --hard`, `git clean -f`,
-  `git branch -D`, `npm`/`pnpm`/`yarn publish`, `wrangler deploy`, `chezmoi apply`), the skeptic
-  checks the proposed action against your messages in the session. Blocking findings must quote
-  both your exact instruction and the offending text in the proposed action; non-blocking findings
-  send a quiet FYI note without blocking.
+  or high-impact shell commands (`gh pr merge`, `git push`, `git commit --no-verify`,
+  `git reset --hard`, `git clean -f`, `git branch -D`, `npm`/`pnpm`/`yarn publish`,
+  `wrangler deploy`, `chezmoi apply`), the skeptic
+  checks the proposed action against your chronological owner conversation (pairing short chat
+  replies with the preceding assistant prompt, including completed `ask_question` answers, and
+  passing a bounded tail of recent post-rollover parent updates since your last turn as
+  non-authoritative context). `contradicts_owner` and `dropped_constraint` findings must quote
+  verbatim both an owner instruction (from your chat messages or completed `ask_question` answers,
+  never assistant text) and the offending text in the proposed action; `bypass_protection`
+  findings (unauthorized `gh pr merge --admin`, `git commit --no-verify` / `-n`, or
+  `git push --no-verify`) require only the verbatim bypass text in the proposed action
+  (`ownerExcerpt` is optional). Blocking findings stop the tool call; non-blocking findings send
+  a quiet FYI note without blocking.
 - Answer any pause with `agent_runs({ action: "continue", id })` (omit `prompt` to approve and
   resume, or pass `prompt` to steer with corrections) or `agent_runs({ action: "stop", id })`.
 
