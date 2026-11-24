@@ -1,7 +1,6 @@
-import type { Static } from "typebox";
+import { Type, type Static } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Type } from "./typebox.ts";
 import { THINKING_LEVELS } from "./contracts.ts";
 import { renderCompactResult } from "../shared/compact-cards.ts";
 

@@ -4,7 +4,7 @@ import { publishAttachment } from "../../src/agent/attachment.ts";
 import { ensureActor, ownIdentity } from "../../src/agent/process.ts";
 import { OwnershipLock } from "../../src/agent/ownership-lock.ts";
 import { launchSchema } from "../../src/agent/contracts.ts";
-import { Assert } from "../../src/agent/typebox.ts";
+import { assertValid } from "../../src/shared/schema.ts";
 import { assertRecord } from "../support/assertions.ts";
 
 const root = process.argv[2];
@@ -13,7 +13,7 @@ if (root === undefined) {
 }
 const base = join(root, "owner");
 const launch: unknown = JSON.parse(readFileSync(join(root, "launch.json"), "utf8"));
-Assert(launchSchema, launch);
+assertValid(launchSchema, launch);
 let held: OwnershipLock | undefined;
 process.on("message", (message: unknown) => {
   assertRecord(message);

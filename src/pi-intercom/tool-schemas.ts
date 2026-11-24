@@ -1,5 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "../agent/typebox.ts";
+import { Type } from "typebox";
 
 export const intercomSchema = Type.Object(
   {

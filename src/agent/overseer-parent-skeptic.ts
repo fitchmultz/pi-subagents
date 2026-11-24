@@ -4,7 +4,8 @@ import type {
   ExtensionContext,
   ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { compile, type Static } from "@earendil-works/pi-schema";
+import { arr, bool, compile, obj, str, type Static } from "@earendil-works/pi-schema";
+import { stringEnum } from "../shared/schema.ts";
 import type { JudgeFailure } from "./contracts.ts";
 import { errorText } from "./host.ts";
 import { captureOwnerContext, type OverseerState } from "./overseer.ts";
@@ -19,27 +20,32 @@ import {
   type SkepticCandidate,
   type SkepticModelRegistry,
 } from "./overseer-skeptic.ts";
-import { Type } from "./typebox.ts";
 
-export const parentFindingKindSchema = Type.Union([
-  Type.Literal("contradicts_owner"),
-  Type.Literal("dropped_constraint"),
-  Type.Literal("unverified_action"),
+export const parentFindingKindSchema = stringEnum([
+  "contradicts_owner",
+  "dropped_constraint",
+  "unverified_action",
 ]);
 
-export const parentSkepticFindingSchema = Type.Object({
-  kind: parentFindingKindSchema,
-  ownerExcerpt: Type.String({ minLength: 1 }),
-  actionExcerpt: Type.String({ minLength: 1 }),
-  why: Type.String({ minLength: 1 }),
-  blocking: Type.Boolean(),
-});
+export const parentSkepticFindingSchema = obj(
+  {
+    kind: parentFindingKindSchema,
+    ownerExcerpt: str({ minLength: 1 }),
+    actionExcerpt: str({ minLength: 1 }),
+    why: str({ minLength: 1 }),
+    blocking: bool(),
+  },
+  { open: true },
+);
 export type ParentSkepticFinding = Static<typeof parentSkepticFindingSchema>;
 
-const parentSkepticResponseSchema = Type.Object({
-  action: Type.Union([Type.Literal("ok"), Type.Literal("block")]),
-  findings: Type.Array(parentSkepticFindingSchema),
-});
+const parentSkepticResponseSchema = obj(
+  {
+    action: stringEnum(["ok", "block"]),
+    findings: arr(parentSkepticFindingSchema),
+  },
+  { open: true },
+);
 const parseParentResponse = compile(parentSkepticResponseSchema, { coerce: true });
 
 const REPORT_PARENT_FINDINGS_TOOL: Tool = {

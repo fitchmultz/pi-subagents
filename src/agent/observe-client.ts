@@ -1,75 +1,96 @@
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
-import type { Static } from "typebox";
+import {
+  arr,
+  bool,
+  compile,
+  int,
+  lit,
+  nullable,
+  num,
+  obj,
+  oneOf,
+  opt,
+  str,
+  tuple,
+  union,
+  unknown,
+  type Static,
+} from "@earendil-works/pi-schema";
 import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
 import { createMessageReader, writeFrame } from "../pi-intercom/broker/framing.ts";
+import { assertValid } from "../shared/schema.ts";
 import type { ObservationIdentity } from "./observation.ts";
 import type { Launch } from "./contracts.ts";
 export type Watch = { launch: Launch; identity?: ObservationIdentity | undefined };
-import { Assert, Type } from "./typebox.ts";
 
-const activitySchema = Type.Object({
-  phase: Type.String(),
-  tools: Type.Array(Type.String()),
-  model: Type.Optional(Type.String()),
-  thinking: Type.Optional(Type.String()),
-});
-const nullableString = Type.Union([Type.String(), Type.Null()]);
-const settlementSchema = Type.Tuple([
-  Type.Number(),
-  Type.String(),
-  Type.Union([Type.Number(), Type.Null()]),
-  nullableString,
-]);
-const blockSchema = Type.Union([
-  Type.Tuple([
-    Type.Integer({ minimum: 0, maximum: 255 }),
-    Type.Union([Type.Literal("text"), Type.Literal("thinking")]),
-    Type.Integer({ minimum: 0 }),
-    Type.String(),
+const activitySchema = obj(
+  {
+    phase: str(),
+    tools: arr(str()),
+    model: opt(str()),
+    thinking: opt(str()),
+  },
+  { open: true },
+);
+const nullableString = nullable(str());
+const settlementSchema = tuple([num(), str(), nullable(num()), nullableString]);
+const blockSchema = union([
+  tuple([
+    int({ minimum: 0, maximum: 255 }),
+    oneOf(["text", "thinking"]),
+    int({ minimum: 0 }),
+    str(),
   ]),
-  Type.Tuple([
-    Type.Integer({ minimum: 0, maximum: 255 }),
-    Type.Literal("toolCall"),
-    Type.String(),
-    Type.String(),
-    Type.Unknown(),
-  ]),
+  tuple([int({ minimum: 0, maximum: 255 }), lit("toolCall"), str(), str(), unknown()]),
 ]);
-const messageSchema = Type.Object({
-  key: Type.Number(),
-  reset: Type.Boolean(),
-  ended: Type.Boolean(),
-  count: Type.Number(),
-  blocks: Type.Array(blockSchema),
-});
-const toolSchema = Type.Object({
-  id: Type.String(),
-  name: Type.Optional(Type.String()),
-  args: Type.Optional(Type.Unknown()),
-  partial: Type.Optional(Type.Object({ rev: Type.Number(), value: Type.Unknown() })),
-  end: Type.Optional(Type.Object({ result: Type.Unknown(), isError: Type.Boolean() })),
-});
-const frameSchema = Type.Union([
-  Type.Object({
-    t: Type.Literal("snapshot"),
-    v: Type.Literal(1),
-    generation: Type.String(),
-    rootId: Type.String(),
-    sessionId: Type.String(),
-    seq: Type.Number(),
-    leafId: nullableString,
-    activity: activitySchema,
-  }),
-  Type.Object({ t: Type.Literal("activity"), activity: activitySchema }),
-  Type.Object({
-    t: Type.Literal("delta"),
-    settled: Type.Array(settlementSchema),
-    tools: Type.Array(toolSchema),
-    message: Type.Optional(messageSchema),
-  }),
+const messageSchema = obj(
+  {
+    key: num(),
+    reset: bool(),
+    ended: bool(),
+    count: num(),
+    blocks: arr(blockSchema),
+  },
+  { open: true },
+);
+const toolSchema = obj(
+  {
+    id: str(),
+    name: opt(str()),
+    args: opt(unknown()),
+    partial: opt(obj({ rev: num(), value: unknown() }, { open: true })),
+    end: opt(obj({ result: unknown(), isError: bool() }, { open: true })),
+  },
+  { open: true },
+);
+const frameSchema = union([
+  obj(
+    {
+      t: lit("snapshot"),
+      v: lit(1),
+      generation: str(),
+      rootId: str(),
+      sessionId: str(),
+      seq: num(),
+      leafId: nullableString,
+      activity: activitySchema,
+    },
+    { open: true },
+  ),
+  obj({ t: lit("activity"), activity: activitySchema }, { open: true }),
+  obj(
+    {
+      t: lit("delta"),
+      settled: arr(settlementSchema),
+      tools: arr(toolSchema),
+      message: opt(messageSchema),
+    },
+    { open: true },
+  ),
 ]);
+const frameValidator = compile(frameSchema);
 export interface ViewedBlock {
   type: "text" | "thinking" | "toolCall";
   text?: string;
@@ -231,7 +252,7 @@ export class ObservationClient {
     if (this.closed) {
       return;
     }
-    Assert(frameSchema, value);
+    assertValid(frameValidator, value);
     if (value.t === "snapshot") {
       this.baseline(value);
     } else if (this.phase !== "ready") {

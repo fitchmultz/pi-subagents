@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import { arr, int, num, obj, oneOf, opt, str, union, unknown } from "@earendil-works/pi-schema";
 import {
   escalationResolutionSchema,
   escalationSchema,
@@ -11,37 +12,34 @@ import {
   type Launch,
 } from "./contracts.ts";
 import { read, runDirectory, write } from "./storage.ts";
-import { Type } from "./typebox.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 import { OVERSEER_STATE_FILE } from "./overseer.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
 
 /** Pre-V2 escalation payload written by children launched before the checkpoint redesign. */
-const legacyEscalationSchema = Type.Object({
-  id: Type.String(),
-  runId: Type.String(),
-  owner: Type.String(),
-  at: Type.Number(),
-  strikes: Type.Integer({ minimum: 1 }),
-  kind: Type.Union([
-    Type.Literal("scope_violation"),
-    Type.Literal("branch_violation"),
-    Type.Literal("primitive_violation"),
-    Type.Literal("loop_violation"),
-  ]),
-  summary: Type.String(),
-  changedFiles: Type.Array(Type.String()),
-  diffExcerpt: Type.String(),
-  diffDigest: Type.String(),
-  since: Type.Optional(Type.Union([Type.Literal("launch"), Type.Literal("approval")])),
-  stat: Type.Optional(Type.String()),
-  diffCommand: Type.Optional(Type.String()),
-  steers: Type.Optional(Type.Integer({ minimum: 0 })),
-  toolErrorTurns: Type.Optional(Type.Array(toolErrorTurnSchema)),
-  classifierReview: Type.Optional(Type.Unknown()),
-});
+const legacyEscalationSchema = obj(
+  {
+    id: str(),
+    runId: str(),
+    owner: str(),
+    at: num(),
+    strikes: int({ minimum: 1 }),
+    kind: oneOf(["scope_violation", "branch_violation", "primitive_violation", "loop_violation"]),
+    summary: str(),
+    changedFiles: arr(str()),
+    diffExcerpt: str(),
+    diffDigest: str(),
+    since: opt(oneOf(["launch", "approval"])),
+    stat: opt(str()),
+    diffCommand: opt(str()),
+    steers: opt(int({ minimum: 0 })),
+    toolErrorTurns: opt(arr(toolErrorTurnSchema)),
+    classifierReview: opt(unknown()),
+  },
+  { open: true },
+);
 
-const anyEscalationSchema = Type.Union([escalationSchema, legacyEscalationSchema]);
+const anyEscalationSchema = union([escalationSchema, legacyEscalationSchema]);
 
 function legacyKind(kind: string, classifierReview: unknown): Escalation["kind"] {
   if (kind === "loop_violation") {

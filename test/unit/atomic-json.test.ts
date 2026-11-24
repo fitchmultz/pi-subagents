@@ -9,8 +9,8 @@ import * as path from "node:path";
 import { it as nodeIt } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { obj, str } from "@earendil-works/pi-schema";
 import { read, runDirectory, write } from "../../src/agent/storage.ts";
-import { Type } from "../../src/agent/typebox.ts";
 import { observeReads } from "../support/runtime-fs.ts";
 
 nodeIt("native agent storage creates private files", () => {
@@ -180,7 +180,7 @@ nodeIt("saved owner reads preserve values with snapshot-sized reads and a 64 KiB
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-agent-owner-read-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "question-owner.json");
-  const schema = Type.Object({ sessionId: Type.String() });
+  const schema = obj({ sessionId: str() }, { open: true });
   const lengths: number[] = [];
   observeReads(t, ({ length }) => {
     lengths.push(length);

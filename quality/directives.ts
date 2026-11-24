@@ -61,20 +61,6 @@ const sites: readonly Site[] = [
     selector: '<module>/dispatchPromise = import(new URL("./tui.js", root).href)',
   },
   {
-    file: "src/agent/typebox.ts",
-    id: "QX-004",
-    rule: "typescript/no-unsafe-assignment",
-    selector:
-      '<module>/typeboxPromise = require === undefined ? import("typebox") : import(pathToFileURL(require.resolve("typebox")).href)',
-  },
-  {
-    file: "src/agent/typebox.ts",
-    id: "QX-004",
-    rule: "typescript/no-unsafe-assignment",
-    selector:
-      '<module>/valuePromise = require === undefined ? import("typebox/value") : import(pathToFileURL(require.resolve("typebox/value")).href)',
-  },
-  {
     file: ".github/scripts/ci-host.mjs",
     id: "QX-004",
     rule: "typescript/no-unsafe-assignment",

@@ -7,9 +7,9 @@ import { findPackageJSON } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test as nodeTest } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { Type } from "typebox";
-import { Assert } from "typebox/value";
+import { arr, compile, int, nullable, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { ensureActor } from "../../src/agent/process.ts";
+import { assertValid } from "../../src/shared/schema.ts";
 import { usageLaunch } from "../support/agent-launch.ts";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
@@ -20,10 +20,22 @@ const brokers = new Map<
   string,
   { child: ChildProcess; exited: Promise<void>; output: () => string }
 >();
-const brokerSchema = Type.Object({
-  pid: Type.Integer(),
-  sessionId: Type.String({ minLength: 1 }),
-});
+const brokerValidator = compile(
+  obj({ pid: int(), sessionId: str({ minLength: 1 }) }, { open: true }),
+);
+const pidValidator = compile(obj({ pid: int() }, { open: true }));
+const crashEvidenceValidator = compile(
+  obj(
+    { entries: arr(obj({ type: str(), customType: opt(str()) }, { open: true })) },
+    { open: true },
+  ),
+);
+const shellFamilyValidator = compile(obj({ pid: int(), descendant: int() }, { open: true }));
+const claimValidator = compile(obj({ token: str() }, { open: true }));
+const exitStatusValidator = compile(
+  obj({ code: nullable(int()), signal: nullable(str()) }, { open: true }),
+);
+const endedAtValidator = compile(obj({ endedAt: num() }, { open: true }));
 async function nativeRoot(prefix: string): Promise<string> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const child = spawn(
@@ -57,7 +69,7 @@ async function nativeRoot(prefix: string): Promise<string> {
       assert.equal(child.signalCode, null, output);
       return registration !== undefined;
     }, "owned broker keeper registers before native phases");
-    Assert(brokerSchema, registration);
+    assertValid(brokerValidator, registration);
     assert.equal(registration.pid, child.pid);
     assertBroker(root);
     return root;
@@ -96,16 +108,21 @@ async function stopBroker(root: string): Promise<void> {
     brokers.delete(root);
   }
 }
-const seedSchema = Type.Object({
-  runId: Type.String(),
-  sessionId: Type.String(),
-  sessionFile: Type.String(),
-  childPid: Type.Integer(),
-  bystanderPid: Type.Optional(Type.Integer()),
-});
+const seedValidator = compile(
+  obj(
+    {
+      runId: str(),
+      sessionId: str(),
+      sessionFile: str(),
+      childPid: int(),
+      bystanderPid: opt(int()),
+    },
+    { open: true },
+  ),
+);
 function seed(root: string) {
   const value: unknown = JSON.parse(fs.readFileSync(path.join(root, "seed.json"), "utf8"));
-  Assert(seedSchema, value);
+  assertValid(seedValidator, value);
   return value;
 }
 function run(root: string, phase: string, killed = false): string {
@@ -156,7 +173,7 @@ function stopShells(root: string): void {
   for (const file of fs.readdirSync(root, { recursive: true })) {
     if (typeof file === "string" && file.includes("/shells/") && file.endsWith(".json")) {
       const value: unknown = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
-      Assert(Type.Object({ pid: Type.Integer() }), value);
+      assertValid(pidValidator, value);
       // Permission-denied claims name another user's process; never signal them.
       if (signalable(value.pid)) {
         process.kill(-value.pid, "SIGKILL");
@@ -190,7 +207,7 @@ async function cleanup(root: string): Promise<void> {
       );
     pids = records.map((file) => {
       const value: unknown = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
-      Assert(Type.Object({ pid: Type.Integer() }), value);
+      assertValid(pidValidator, value);
       return value.pid;
     });
     await until(
@@ -496,14 +513,7 @@ for (const crash of [undefined, "before", "after"]) {
           const evidence: unknown = JSON.parse(
             fs.readFileSync(path.join(root, `crash-${crash}.json`), "utf8"),
           );
-          Assert(
-            Type.Object({
-              entries: Type.Array(
-                Type.Object({ type: Type.String(), customType: Type.Optional(Type.String()) }),
-              ),
-            }),
-            evidence,
-          );
+          assertValid(crashEvidenceValidator, evidence);
           assert.equal(
             evidence.entries.filter(
               (entry) => entry.type === "custom_message" && entry.customType === "agent-completion",
@@ -585,7 +595,7 @@ for (const [death, phase] of [
         const family: unknown = JSON.parse(
           fs.readFileSync(path.join(root, "shell-family.json"), "utf8"),
         );
-        Assert(Type.Object({ pid: Type.Integer(), descendant: Type.Integer() }), family);
+        assertValid(shellFamilyValidator, family);
         await until(
           () => [saved.childPid, family.pid, family.descendant].every(dead),
           "actor and native shell descendants terminate without any request to the dead parent",
@@ -678,10 +688,6 @@ for (const [name, thrown, error] of [
       t.after(() => cleanup(root));
       const sdkDouble = path.join(root, "sdk");
       fs.mkdirSync(path.join(sdkDouble, "dist"), { recursive: true });
-      fs.mkdirSync(path.join(sdkDouble, "node_modules"));
-      const hostTypebox = findPackageJSON("typebox", path.join(sdk, "dist/index.js"));
-      assert.notEqual(hostTypebox, undefined);
-      fs.symlinkSync(path.dirname(hostTypebox ?? ""), path.join(sdkDouble, "node_modules/typebox"));
       fs.writeFileSync(
         path.join(sdkDouble, "package.json"),
         JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module" }),
@@ -706,17 +712,11 @@ export async function createAgentSessionRuntime() { throw ${thrown}; }
       const claim: unknown = JSON.parse(
         fs.readFileSync(path.join(directory, "actor.lock/claim.json"), "utf8"),
       );
-      Assert(Type.Object({ token: Type.String() }), claim);
+      assertValid(claimValidator, claim);
       const exitFile = path.join(directory, `exit-${claim.token}.json`);
       await until(() => fs.existsSync(exitFile), "detached actor exit is recorded");
       const exit: unknown = JSON.parse(fs.readFileSync(exitFile, "utf8"));
-      Assert(
-        Type.Object({
-          code: Type.Union([Type.Integer(), Type.Null()]),
-          signal: Type.Union([Type.String(), Type.Null()]),
-        }),
-        exit,
-      );
+      assertValid(exitStatusValidator, exit);
       assert.deepEqual(
         {
           code: exit.code,
@@ -729,7 +729,7 @@ export async function createAgentSessionRuntime() { throw ${thrown}; }
       const result: unknown = JSON.parse(
         fs.readFileSync(path.join(directory, "result.json"), "utf8"),
       );
-      Assert(Type.Object({ endedAt: Type.Number() }), result);
+      assertValid(endedAtValidator, result);
       assert.deepEqual(result, {
         id: "run",
         owner: "owner",
