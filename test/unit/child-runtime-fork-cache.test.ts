@@ -6,15 +6,11 @@ import * as path from "node:path";
 import { findPackageJSON } from "node:module";
 import { describe as nodeDescribe, it as nodeIt, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
-import type { Api, Model, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Assert } from "typebox/value";
 import { backgroundCommands } from "../../src/agent/background-work.ts";
-import {
-  childRuntime,
-  shouldPreserveParentTools,
-  supportsMidConvoToolChanges,
-} from "../../src/agent/child-runtime.ts";
+import { childRuntime } from "../../src/agent/child-runtime.ts";
 import type { Launch } from "../../src/agent/contracts.ts";
 import { loadSDK, packageRoot, runtimeEntry } from "../../src/agent/host.ts";
 import { isRecord } from "../../src/shared/unknown.ts";
@@ -29,17 +25,6 @@ const capturedRequestSchema = Type.Object({
     }),
   ),
 });
-
-function makeModelStub<TApi extends Api>(
-  api: TApi,
-  compat?: Model<TApi>["compat"],
-): Pick<Model<Api>, "api" | "compat"> {
-  if (compat === undefined) {
-    return { api };
-  }
-  const stub: Pick<Model<TApi>, "api" | "compat"> = { api, compat };
-  return stub;
-}
 
 function writeFixtureExtension(file: string, sdkRoot: string, logFile: string): void {
   const aiManifest = findPackageJSON(
@@ -111,6 +96,23 @@ export default function fixture(pi) {
   });
   claudeCore.setResponses([makeResponder(), makeResponder(), makeResponder()]);
   pi.registerProvider(claudeProvider);
+
+  const responsesCore = createFauxCore({
+    api: "openai-responses",
+    provider: "fork-cache-responses-additions",
+    models: [{ id: "gpt-additions-only", reasoning: true }],
+  });
+  const responsesProvider = createProvider({
+    id: responsesCore.provider,
+    auth: { apiKey: { name: "Faux", resolve: async () => ({ auth: {} }) } },
+    models: responsesCore.models.map((m) => ({
+      ...m,
+      compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+    })),
+    api: { stream: responsesCore.stream, streamSimple: responsesCore.streamSimple },
+  });
+  responsesCore.setResponses([makeResponder(), makeResponder(), makeResponder()]);
+  pi.registerProvider(responsesProvider);
 
   for (const name of ["exposure_probe", "hidden_probe"]) {
     pi.registerTool({
@@ -361,75 +363,9 @@ async function runChildScenario(
   };
 }
 
-nodeDescribe("child-runtime mid-conversation tool change detection", () => {
-  nodeIt("recognizes compat flags and excludes non-mid-convo-tool APIs", () => {
-    assert.equal(supportsMidConvoToolChanges(makeModelStub("google-generative-ai")), false);
-    const geminiWithMidConvoSystem: Pick<Model<Api>, "api" | "compat"> = {
-      api: "google-generative-ai",
-      compat: { supportsMidConvoSystemMessages: true },
-    };
-    assert.equal(supportsMidConvoToolChanges(geminiWithMidConvoSystem), false);
-    assert.equal(supportsMidConvoToolChanges(makeModelStub("google-vertex")), false);
-    assert.equal(supportsMidConvoToolChanges(makeModelStub("bedrock-converse-stream")), false);
-    assert.equal(supportsMidConvoToolChanges(makeModelStub("anthropic-messages")), false);
-    assert.equal(
-      supportsMidConvoToolChanges(
-        makeModelStub("anthropic-messages", { supportsMidConvoToolChanges: true }),
-      ),
-      false,
-    );
-    assert.equal(
-      supportsMidConvoToolChanges(
-        makeModelStub("anthropic-messages", {
-          supportsMidConvoSystemMessages: true,
-          supportsMidConvoToolChanges: true,
-        }),
-      ),
-      true,
-    );
-    assert.equal(
-      supportsMidConvoToolChanges(
-        makeModelStub("openai-completions", {
-          supportsMidConvoSystemMessages: true,
-          supportsMidConvoToolAdditions: true,
-        }),
-      ),
-      false,
-    );
-    assert.equal(
-      supportsMidConvoToolChanges(
-        makeModelStub("openai-responses", {
-          supportsMidConvoSystemMessages: true,
-          supportsAdditionalTools: true,
-        }),
-      ),
-      true,
-    );
-    assert.equal(
-      supportsMidConvoToolChanges(
-        makeModelStub("openai-responses", {
-          supportsMidConvoSystemMessages: true,
-          supportsToolSearch: true,
-        }),
-      ),
-      false,
-    );
-
-    const gemini = makeModelStub("google-generative-ai");
-    const claude = makeModelStub("anthropic-messages", {
-      supportsMidConvoSystemMessages: true,
-      supportsMidConvoToolChanges: true,
-    });
-    assert.equal(shouldPreserveParentTools({ context: "fork" }, gemini), true);
-    assert.equal(shouldPreserveParentTools({ context: "fresh" }, gemini), false);
-    assert.equal(shouldPreserveParentTools({ context: "fork" }, claude), false);
-    assert.equal(shouldPreserveParentTools({ context: "fresh" }, claude), false);
-  });
-});
-
 nodeDescribe("child-runtime fork prompt-cache tool preservation", () => {
   nodeIt(
-    "preserves parent delegate/agent_runs and skips subagents.toolExposure on Gemini 4 fork while still blocking calls",
+    "preserves parent delegate/agent_runs and deferred tools on Gemini 4 fork while honoring hidden denies and blocking guarded calls",
     async (t) => {
       const result = await runChildScenario(t, {
         context: "fork",
@@ -440,21 +376,25 @@ nodeDescribe("child-runtime fork prompt-cache tool preservation", () => {
       const parentRequest = result.parentRequest;
       const firstRequest = result.childRequests[0];
       assert.ok(parentRequest !== undefined && firstRequest !== undefined);
-      assert.deepEqual(firstRequest.declared, parentRequest.declared);
+      const expectedDeclared = result.hostExposes
+        ? parentRequest.declared.filter((name) => name !== "hidden_probe")
+        : parentRequest.declared;
+      assert.deepEqual(firstRequest.declared, expectedDeclared);
       assert.equal(firstRequest.declared.includes("delegate"), true);
       assert.equal(firstRequest.declared.includes("agent_runs"), true);
       assert.equal(firstRequest.declared.includes("exposure_probe"), true);
-      assert.equal(firstRequest.declared.includes("hidden_probe"), true);
 
       const laterSystems = firstRequest.systemMessages.slice(1);
       for (const sys of laterSystems) {
         assert.deepEqual(sys.toolsAdded ?? [], []);
-        assert.deepEqual(sys.toolsRemoved ?? [], []);
+        const removedNames = (sys.toolsRemoved ?? []).map((tool) => tool.name);
+        assert.deepEqual(removedNames, result.hostExposes ? ["hidden_probe"] : []);
       }
 
       if (result.hostExposes) {
-        assert.equal(readToolExposureSetting(result.settingsManager, "exposure_probe"), undefined);
-        assert.equal(readToolExposureSetting(result.settingsManager, "hidden_probe"), undefined);
+        assert.equal(readToolExposureSetting(result.settingsManager, "exposure_probe"), "deferred");
+        assert.equal(readToolExposureSetting(result.settingsManager, "hidden_probe"), "hidden");
+        assert.equal(firstRequest.declared.includes("hidden_probe"), false);
       }
 
       const delegateResult = result.toolResults.find((m) => m.toolName === "delegate");
@@ -513,6 +453,24 @@ nodeDescribe("child-runtime fork prompt-cache tool preservation", () => {
         assert.equal(readToolExposureSetting(result.settingsManager, "hidden_probe"), "hidden");
         assert.equal(firstRequest.declared.includes("hidden_probe"), false);
       }
+    },
+  );
+
+  nodeIt(
+    "preserves parent delegate/agent_runs on additions-only models whose tool removals cannot stay cached",
+    async (t) => {
+      const result = await runChildScenario(t, {
+        context: "fork",
+        provider: "fork-cache-responses-additions",
+        model: "gpt-additions-only",
+        prompt: "TRY_DELEGATE_AND_RUNS",
+      });
+      const firstRequest = result.childRequests[0];
+      assert.ok(firstRequest !== undefined, "expected Turn 1 provider request");
+      assert.equal(firstRequest.declared.includes("delegate"), true);
+      assert.equal(firstRequest.declared.includes("agent_runs"), true);
+      const delegateResult = result.toolResults.find((m) => m.toolName === "delegate");
+      assert.equal(delegateResult?.isError, true);
     },
   );
 });

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as piAi from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
   CreateAgentSessionRuntimeFactory,
@@ -24,7 +25,12 @@ const NON_MID_CONVO_TOOL_APIS = new Set([
   "bedrock-converse-stream",
 ]);
 
-export function supportsMidConvoToolChanges(model: Pick<Model<Api>, "api" | "compat">): boolean {
+function supportsMidConvoToolChanges(model: Model<Api>): boolean {
+  const sharedSupport: unknown = Reflect.get(piAi, "getMidConvoToolSupport");
+  if (typeof sharedSupport === "function") {
+    return Reflect.apply(sharedSupport, piAi, [model]) === "changes";
+  }
+  // Fallback for upstream @earendil-works/pi-ai hosts that predate getMidConvoToolSupport.
   if (NON_MID_CONVO_TOOL_APIS.has(model.api)) {
     return false;
   }
@@ -32,13 +38,10 @@ export function supportsMidConvoToolChanges(model: Pick<Model<Api>, "api" | "com
   if (!compat || compat.supportsMidConvoSystemMessages !== true) {
     return false;
   }
-  return compat.supportsMidConvoToolChanges === true || compat.supportsAdditionalTools === true;
+  return compat.supportsMidConvoToolChanges === true;
 }
 
-export function shouldPreserveParentTools(
-  launch: Pick<Launch, "context">,
-  model: Pick<Model<Api>, "api" | "compat">,
-): boolean {
+function shouldPreserveParentTools(launch: Pick<Launch, "context">, model: Model<Api>): boolean {
   return launch.context === "fork" && !supportsMidConvoToolChanges(model);
 }
 
@@ -196,10 +199,9 @@ export function childRuntime(
         `Saved model ${launch.provider}/${launch.model} is unavailable; no fallback was used.`,
       );
     }
+    exposeChildTools(services.settingsManager);
     if (shouldPreserveParentTools(launch, model)) {
       exposeGuardedTools(services.resourceLoader.getExtensions().extensions);
-    } else {
-      exposeChildTools(services.settingsManager);
     }
     return {
       ...(await sdk.createAgentSessionFromServices({
