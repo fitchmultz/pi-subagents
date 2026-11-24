@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.73 - 2026-11-24
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- refactor: migrate internal schemas and validation from TypeBox to pi-schema (#500) ([616a717](https://github.com/fitchmultz/pi-subagents/commit/616a7175cdeaae0307e20595332cb63f8c572ebe))
+
+### What's Changed
+
+- refactor: migrate internal schemas and validation from TypeBox to pi-schema by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/500
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.72...v0.52.73
+
 ## 0.52.72 - 2026-11-24
 
 <!-- npm-release:unreleased:start -->
