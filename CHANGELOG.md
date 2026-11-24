@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.72 - 2026-11-24
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix(agent): preserve parent tool prefix on non-mid-convo-tool forks and add Gemini 4 Hydrogen skeptic fallback (PSA-214) (#499) ([d225855](https://github.com/fitchmultz/pi-subagents/commit/d22585538a3083598970fc5d9026a971a5319773))
+
+### What's Changed
+
+- fix(agent): preserve parent tool prefix on non-mid-convo-tool forks and add Gemini 4 Hydrogen skeptic fallback (PSA-214) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/499
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.71...v0.52.72
+
 ## 0.52.71 - 2026-11-23
 
 <!-- npm-release:unreleased:start -->
