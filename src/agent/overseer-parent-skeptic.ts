@@ -158,6 +158,10 @@ export function extractParentAction(
 const normalizeWhitespace = (text: string): string => text.replace(/\s+/gu, " ").trim();
 
 const STANDALONE_BYPASS_FLAG = /^(?:--admin|--no-verify)$/u;
+const RECENT_UPDATES_MAX_ITEMS = 12;
+const RECENT_UPDATES_MAX_CHARS = 12_000;
+const MIN_RECENT_UPDATE_BUDGET_CHARS = 64;
+const TRUNCATED_PREFIX = "...[truncated]\n";
 
 function matchesOwnerGroundable(
   ownerQuote: string,
@@ -260,16 +264,64 @@ function extractParentPayload(
   return { ok: true, payload: assistantText(message) };
 }
 
-function buildParentUserMessage(input: ParentSkepticInput): string {
-  const sections = [
-    `## Owner conversation (oldest to newest; newest owner decision wins across [Owner] and [Owner answered ask_question])\n${input.context.ownerConversation}`,
-  ];
-  if (input.context.recentAssistantUpdates.length > 0) {
-    sections.push(
-      `## Recent parent updates since last owner turn (context only — NOT owner authority)\n${input.context.recentAssistantUpdates.join("\n\n")}`,
+function formatRecentAssistantUpdates(
+  updates: readonly string[],
+  contextWindow: number,
+  fixedChars: number,
+): string | undefined {
+  if (updates.length === 0) {
+    return undefined;
+  }
+  const headroom = Math.max(0, Math.floor(contextWindow * 2) - fixedChars);
+  const budget = Math.min(RECENT_UPDATES_MAX_CHARS, headroom);
+  if (budget < MIN_RECENT_UPDATE_BUDGET_CHARS) {
+    return undefined;
+  }
+  const kept: string[] = [];
+  let usedChars = 0;
+  for (let i = updates.length - 1; i >= 0 && kept.length < RECENT_UPDATES_MAX_ITEMS; i -= 1) {
+    const entry = updates[i] ?? "";
+    const separator = kept.length > 0 ? 2 : 0;
+    if (usedChars + separator + entry.length <= budget) {
+      kept.push(entry);
+      usedChars += separator + entry.length;
+      continue;
+    }
+    if (kept.length === 0) {
+      const keepChars = Math.max(1, budget - TRUNCATED_PREFIX.length);
+      kept.push(`${TRUNCATED_PREFIX}${entry.slice(-keepChars)}`);
+    }
+    break;
+  }
+  kept.reverse();
+  const omitted = updates.length - kept.length;
+  if (omitted > 0) {
+    kept.unshift(
+      `[${omitted} earlier parent update(s) omitted; showing the most recent since the last owner turn or rollover.]`,
     );
   }
-  sections.push(`## Proposed parent action (${input.action.label})\n${input.action.text}`);
+  return kept.join("\n\n");
+}
+
+function buildParentUserMessage(input: ParentSkepticInput, contextWindow: number): string {
+  const ownerSection = `## Owner conversation (oldest to newest; newest owner decision wins across [Owner] and [Owner answered ask_question])\n${input.context.ownerConversation}`;
+  const actionSection = `## Proposed parent action (${input.action.label})\n${input.action.text}`;
+  const fixedChars =
+    PARENT_SKEPTIC_SYSTEM_PROMPT.length + ownerSection.length + actionSection.length;
+  const recentBody = formatRecentAssistantUpdates(
+    input.context.recentAssistantUpdates,
+    contextWindow,
+    fixedChars,
+  );
+  const sections = [
+    ownerSection,
+    ...(recentBody === undefined
+      ? []
+      : [
+          `## Recent parent updates since last owner turn (context only — NOT owner authority)\n${recentBody}`,
+        ]),
+    actionSection,
+  ];
   return sections.join("\n\n");
 }
 
@@ -288,7 +340,13 @@ async function askParentSkeptic(
       {
         systemPrompt: PARENT_SKEPTIC_SYSTEM_PROMPT,
         tools: [REPORT_PARENT_FINDINGS_TOOL],
-        messages: [{ role: "user", content: buildParentUserMessage(input), timestamp: Date.now() }],
+        messages: [
+          {
+            role: "user",
+            content: buildParentUserMessage(input, candidate.model.contextWindow),
+            timestamp: Date.now(),
+          },
+        ],
       },
       {
         ...(candidate.thinking !== undefined && candidate.model.reasoning

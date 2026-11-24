@@ -70,10 +70,14 @@ When enabled:
   `wrangler deploy`, `chezmoi apply`), the skeptic
   checks the proposed action against your chronological owner conversation (pairing short chat
   replies with the preceding assistant prompt, including completed `ask_question` answers, and
-  passing recent parent updates since your last turn as non-authoritative context). Blocking
-  findings must quote verbatim both an owner instruction (from your chat messages or completed
-  `ask_question` answers, never assistant text) and the offending text in the proposed action;
-  non-blocking findings send a quiet FYI note without blocking.
+  passing a bounded tail of recent post-rollover parent updates since your last turn as
+  non-authoritative context). `contradicts_owner` and `dropped_constraint` findings must quote
+  verbatim both an owner instruction (from your chat messages or completed `ask_question` answers,
+  never assistant text) and the offending text in the proposed action; `bypass_protection`
+  findings (unauthorized `gh pr merge --admin`, `git commit --no-verify` / `-n`, or
+  `git push --no-verify`) require only the verbatim bypass text in the proposed action
+  (`ownerExcerpt` is optional). Blocking findings stop the tool call; non-blocking findings send
+  a quiet FYI note without blocking.
 - Answer any pause with `agent_runs({ action: "continue", id })` (omit `prompt` to approve and
   resume, or pass `prompt` to steer with corrections) or `agent_runs({ action: "stop", id })`.
 

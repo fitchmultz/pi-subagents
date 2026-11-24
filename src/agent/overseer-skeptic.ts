@@ -23,7 +23,7 @@ import { DirectoryWatch } from "./wake.ts";
 /**
  * Default auto fallback order, measured against real child drift cases (pi-posthorse#224,
  * PIF-204 5-minute timer) and a 42-case real-session parent-skeptic replay benchmark:
- * 1. Claude Haiku 5.5 at low reasoning (0/28 parent FPs, 10/14 TPs, p50 ~3.5s, $0.10/$0.50 per 1M)
+ * 1. Claude Haiku 5.5 at low reasoning (0/28 parent FPs, 13/14 TPs flagged, p50 ~3.1s, $0.10/$0.50 per 1M)
  * 2. GPT-6 Luna at medium reasoning (~5s, $0.10/$0.50 per 1M)
  * 3. Gemini 3.8 Flash at medium reasoning (4/4 live, $0.75/$3.75 per 1M)
  * 4. Gemini 4 Hydrogen at medium reasoning (Gemini 4 fallback when 3.8 Flash is unavailable)

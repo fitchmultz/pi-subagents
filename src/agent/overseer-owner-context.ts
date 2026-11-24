@@ -109,6 +109,7 @@ class OwnerTimelineBuilder {
       if (this.ownerTexts.length > 0) {
         this.turns.push("--- [Context rolled over] ---");
       }
+      this.recentAssistantUpdates = [];
       return;
     }
     if (entry.type === "message" && isRecord(entry.message)) {

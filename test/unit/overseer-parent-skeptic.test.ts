@@ -897,4 +897,93 @@ nodeDescribe("overseer parent-side skeptic tool_call gate", () => {
       assert.doesNotMatch(String(blocked.reason), /Applied narrowed AGENTS\.md clause/u);
     },
   );
+
+  nodeIt(
+    "resets recent parent updates across compaction and bounds long autonomous stretches",
+    async (t) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-parent-skeptic-bound-"));
+      t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+      // 1. Pre-compaction assistant updates do not carry over after compaction.
+      const compactManager = SessionManager.inMemory(root);
+      compactManager.appendMessage({ role: "user", content: "Ship the fix.", timestamp: 1 });
+      compactManager.appendMessage(fakeAssistant([{ type: "text", text: "Pre-rollover note." }]));
+      const anchor = compactManager.getLeafId();
+      assert.ok(anchor !== null);
+      compactManager.appendCompaction("rolled over", anchor, 50_000);
+      compactManager.appendMessage(
+        fakeAssistant([{ type: "text", text: "Post-rollover verification passed." }]),
+      );
+      const compactedContext = captureOwnerBranchContext(compactManager);
+      assert.ok(compactedContext !== undefined);
+      assert.deepEqual(compactedContext.recentAssistantUpdates, [
+        "Post-rollover verification passed.",
+      ]);
+
+      // 2. 500 autonomous assistant updates (~206 KB) stay bounded in the parent skeptic prompt.
+      const longManager = SessionManager.inMemory(root);
+      longManager.appendMessage({
+        role: "user",
+        content: "Ship the fix once CI is green.",
+        timestamp: 1,
+      });
+      for (let i = 1; i <= 500; i += 1) {
+        longManager.appendMessage(
+          fakeAssistant([{ type: "text", text: `Update #${i}: ${"x".repeat(390)}` }]),
+        );
+      }
+      const state: OverseerState = { enabled: true, model: "inherit", judge: "auto" };
+      const native = await createNativeSessionFixture({
+        cwd: root,
+        agentDir: root,
+        sessionManager: longManager,
+        configure: (pi) => {
+          attachParentSkeptic(pi, () => state);
+        },
+      });
+      t.after(async () => {
+        await native.dispose();
+      });
+
+      const haiku = makeModel("cloudflare-ai-gateway", "claude-haiku-5-5", true);
+      let seenPrompt = "";
+      const registry: SkepticModelRegistry = {
+        getAvailable: () => [haiku],
+        find: (provider, id) =>
+          provider === haiku.provider && id === haiku.id ? haiku : undefined,
+        streamSimple: (_model, context) => {
+          const first = context.messages[0];
+          seenPrompt = typeof first?.content === "string" ? first.content : "";
+          return {
+            result: async () =>
+              fakeAssistant([
+                {
+                  type: "toolCall",
+                  id: "tc-bound",
+                  name: "report_parent_findings",
+                  arguments: { action: "ok", findings: [] },
+                },
+              ]),
+          };
+        },
+      };
+      Object.assign(native.context.modelRegistry, registry);
+
+      const toolCall = native.extensions[0]?.handlers.get("tool_call")?.[0];
+      assert.ok(toolCall !== undefined);
+      await toolCall(
+        {
+          type: "tool_call",
+          toolCallId: "c-bound",
+          toolName: "bash",
+          input: { command: "git push origin feat" },
+        },
+        native.context,
+      );
+      assert.ok(seenPrompt.length < 14_000, `expected bounded prompt, got ${seenPrompt.length}`);
+      assert.match(seenPrompt, /488 earlier parent update\(s\) omitted/u);
+      assert.match(seenPrompt, /Update #500:/u);
+      assert.doesNotMatch(seenPrompt, /Update #1:/u);
+    },
+  );
 });

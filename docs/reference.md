@@ -558,17 +558,25 @@ grounded skeptic `tool_call` check before:
   `git commit --no-verify`, `git reset --hard`, `git clean -f`, `git branch -D`,
   `npm|pnpm|yarn publish`, `wrangler deploy`, `chezmoi apply`).
 
-Ordinary local commands (reads, tests, searches, local commits) skip the check. Every finding must
-quote verbatim both an `ownerExcerpt` (>= 6 chars) from the owner's own chat messages or completed
-(non-cancelled, non-timed-out) `ask_question` answers — never from assistant text or peer messages —
-and an `actionExcerpt` (>= 6 chars) from the proposed tool input (`validateParentFindings`);
-ungrounded findings are dropped automatically. The prompt pairs each owner turn with the
-immediately preceding assistant prompt and appends recent parent updates since the latest owner
-turn as non-authoritative context so brief approvals (`a`, `yes`, `both`), `ask_question` choices,
-and completed checks supersede earlier holds instead of causing false blocks. Grounded
-`blocking: true` findings block the tool call with the quoted contradiction; non-blocking findings
-append an `[overseer-note]` without blocking; model unavailability fails open with a warning
-notification so the main session is never deadlocked.
+Ordinary local commands (reads, tests, searches, local commits) skip the check. Grounding rules
+in `validateParentFindings` depend on the finding kind:
+
+- `contradicts_owner` and `dropped_constraint` require verbatim quotes of both an `ownerExcerpt`
+  (>= 6 chars) from the owner's own chat messages or completed (non-cancelled, non-timed-out)
+  `ask_question` answers — never from assistant text or peer messages — and an `actionExcerpt`
+  (>= 6 chars) from the proposed tool input.
+- `bypass_protection` (unauthorized `gh pr merge --admin`, `git commit --no-verify` / `-n`, or
+  `git push --no-verify`) requires the command and `actionExcerpt` to carry a real bypass flag
+  (verified via `hasProtectionBypassFlag`, ignoring quoted messages/bodies and operands after
+  `--`); `ownerExcerpt` is optional.
+
+Ungrounded findings are dropped automatically. The prompt pairs each owner turn with the
+immediately preceding assistant prompt and appends a bounded tail of recent post-rollover parent
+updates since the latest owner turn as non-authoritative context so brief approvals (`a`, `yes`,
+`both`), `ask_question` choices, and completed checks supersede earlier holds instead of causing
+false blocks. Grounded `blocking: true` findings block the tool call with the quoted reason;
+non-blocking findings append an `[overseer-note]` without blocking; model unavailability fails
+open with a warning notification so the main session is never deadlocked.
 
 ### Answering a checkpoint pause
 
