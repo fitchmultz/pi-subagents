@@ -107,12 +107,29 @@ export default function fixture(pi) {
     auth: { apiKey: { name: "Faux", resolve: async () => ({ auth: {} }) } },
     models: responsesCore.models.map((m) => ({
       ...m,
-      compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+      compat: { supportsMidConvoSystemMessages: true, supportsToolSearch: true },
     })),
     api: { stream: responsesCore.stream, streamSimple: responsesCore.streamSimple },
   });
   responsesCore.setResponses([makeResponder(), makeResponder(), makeResponder()]);
   pi.registerProvider(responsesProvider);
+
+  const responsesChangesCore = createFauxCore({
+    api: "openai-responses",
+    provider: "fork-cache-responses-changes",
+    models: [{ id: "gpt-6.2-changes", reasoning: true }],
+  });
+  const responsesChangesProvider = createProvider({
+    id: responsesChangesCore.provider,
+    auth: { apiKey: { name: "Faux", resolve: async () => ({ auth: {} }) } },
+    models: responsesChangesCore.models.map((m) => ({
+      ...m,
+      compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+    })),
+    api: { stream: responsesChangesCore.stream, streamSimple: responsesChangesCore.streamSimple },
+  });
+  responsesChangesCore.setResponses([makeResponder(), makeResponder(), makeResponder()]);
+  pi.registerProvider(responsesChangesProvider);
 
   for (const name of ["exposure_probe", "hidden_probe"]) {
     pi.registerTool({
@@ -471,6 +488,22 @@ nodeDescribe("child-runtime fork prompt-cache tool preservation", () => {
       assert.equal(firstRequest.declared.includes("agent_runs"), true);
       const delegateResult = result.toolResults.find((m) => m.toolName === "delegate");
       assert.equal(delegateResult?.isError, true);
+    },
+  );
+
+  nodeIt(
+    "keeps forked children on OpenAI Responses models with supportsAdditionalTools hiding delegate/agent_runs",
+    async (t) => {
+      const result = await runChildScenario(t, {
+        context: "fork",
+        provider: "fork-cache-responses-changes",
+        model: "gpt-6.2-changes",
+        prompt: "RESPONSES_CHANGES_TURN",
+      });
+      const firstRequest = result.childRequests[0];
+      assert.ok(firstRequest !== undefined, "expected Turn 1 provider request");
+      assert.equal(firstRequest.declared.includes("delegate"), false);
+      assert.equal(firstRequest.declared.includes("agent_runs"), false);
     },
   );
 });

@@ -26,6 +26,11 @@ const NON_MID_CONVO_TOOL_APIS = new Set([
   "google-vertex",
   "bedrock-converse-stream",
 ]);
+const RESPONSES_TOOL_APIS = new Set([
+  "openai-responses",
+  "openai-codex-responses",
+  "azure-openai-responses",
+]);
 
 type MidConvoToolSupportFn = (model: Model<Api>) => unknown;
 const hostToolSupportCache = new Map<string, Promise<MidConvoToolSupportFn | undefined>>();
@@ -73,13 +78,16 @@ function supportsMidConvoToolChanges(
   if (sharedSupport !== undefined) {
     return sharedSupport(model) === "changes";
   }
-  // Fallback for upstream @earendil-works/pi-ai hosts that predate getMidConvoToolSupport.
+  // Fallback for @earendil-works/pi-ai hosts that do not export getMidConvoToolSupport.
   if (NON_MID_CONVO_TOOL_APIS.has(model.api)) {
     return false;
   }
   const compat = recordAt(model, "compat");
   if (!compat || compat.supportsMidConvoSystemMessages !== true) {
     return false;
+  }
+  if (RESPONSES_TOOL_APIS.has(model.api)) {
+    return compat.supportsAdditionalTools === true;
   }
   return compat.supportsMidConvoToolChanges === true;
 }
