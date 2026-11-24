@@ -71,6 +71,13 @@ function isHighImpactGit(tokens: readonly string[]): boolean {
   if (sub === "push") {
     return true;
   }
+  if (sub === "commit") {
+    return rest.some(
+      (arg) =>
+        arg === "--no-verify" ||
+        (arg.startsWith("-") && !arg.startsWith("--") && arg.includes("n")),
+    );
+  }
   if (sub === "reset") {
     return rest.includes("--hard");
   }

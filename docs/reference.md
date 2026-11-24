@@ -493,9 +493,11 @@ No delegation contract or file-glob allowlist is required.
   children, and editing checkpoints (`shape_check`, `final_diff`, skeptic) are skipped. Shell
   commands are not OS-sandboxed.
 - Editing children work freely from the plain-English task prompt and standing rules (prefer
-  isolated worktrees). When overseer mode is enabled, `prepareLaunch` also snapshots recent owner
-  messages from the parent session branch (`ownerContext`) so the skeptic sees the owner's actual
-  intent even on `context: "fresh"` launches.
+  isolated worktrees). When overseer mode is enabled, `prepareLaunch` also snapshots the parent
+  session branch's chronological owner conversation (`ownerContext`, pairing short chat replies
+  with the preceding assistant prompt and including completed `ask_question` answers) so the
+  skeptic sees the owner's actual intent even on `context: "fresh"` launches or after context
+  rollover.
 
 ### Single-watermark checkpoints
 
@@ -523,7 +525,7 @@ Three predictable triggers pause the child and notify the parent with `[agent-es
 With `/overseer-judge auto`, the skeptic tries available chat models via Pi's native
 `modelRegistry.streamSimple` in this order:
 
-1. `cloudflare-ai-gateway/claude-haiku-5-5` → `anthropic/claude-haiku-5-5`
+1. `cloudflare-ai-gateway/claude-haiku-5-5:low` → `anthropic/claude-haiku-5-5:low`
 2. `cloudflare-ai-gateway/gpt-6-luna:medium` → `openai/gpt-6-luna:medium`
 3. `google/gemini-3.8-flash:medium`
 4. `google/gemini-4-hydrogen:medium`
@@ -553,16 +555,20 @@ grounded skeptic `tool_call` check before:
 - `delegate` calls,
 - `agent_runs` `action="continue"` calls that carry a `prompt`, and
 - high-impact `bash` commands (`gh pr merge`, `gh release create|delete`, `git push`,
-  `git reset --hard`, `git clean -f`, `git branch -D`, `npm|pnpm|yarn publish`,
-  `wrangler deploy`, `chezmoi apply`).
+  `git commit --no-verify`, `git reset --hard`, `git clean -f`, `git branch -D`,
+  `npm|pnpm|yarn publish`, `wrangler deploy`, `chezmoi apply`).
 
 Ordinary local commands (reads, tests, searches, local commits) skip the check. Every finding must
-quote verbatim both an `ownerExcerpt` (>= 6 chars) from the active parent branch's user messages
+quote verbatim both an `ownerExcerpt` (>= 6 chars) from the owner's own chat messages or completed
+(non-cancelled, non-timed-out) `ask_question` answers — never from assistant text or peer messages —
 and an `actionExcerpt` (>= 6 chars) from the proposed tool input (`validateParentFindings`);
-ungrounded findings are dropped automatically. Grounded `blocking: true` findings block the tool
-call with the quoted contradiction; non-blocking findings append an `[overseer-note]` without
-blocking; model unavailability fails open with a warning notification so the main session is never
-deadlocked.
+ungrounded findings are dropped automatically. The prompt pairs each owner turn with the
+immediately preceding assistant prompt and appends recent parent updates since the latest owner
+turn as non-authoritative context so brief approvals (`a`, `yes`, `both`), `ask_question` choices,
+and completed checks supersede earlier holds instead of causing false blocks. Grounded
+`blocking: true` findings block the tool call with the quoted contradiction; non-blocking findings
+append an `[overseer-note]` without blocking; model unavailability fails open with a warning
+notification so the main session is never deadlocked.
 
 ### Answering a checkpoint pause
 

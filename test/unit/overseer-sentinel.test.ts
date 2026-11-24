@@ -323,7 +323,7 @@ nodeDescribe("overseer-skeptic grounding and fallback", () => {
     assert.equal(outcome.verdict.blocking.length, 1);
     assert.equal(outcome.checkpoint.outcome, "flagged");
     assert.equal(outcome.checkpoint.failed?.length, 1);
-    assert.ok(failed.has("cloudflare-ai-gateway/claude-haiku-5-5"));
+    assert.ok(failed.has("cloudflare-ai-gateway/claude-haiku-5-5:low"));
   });
 
   nodeIt(
@@ -519,6 +519,66 @@ nodeDescribe("overseer controller & owner context", () => {
       assert.match(ownerContext, /Rule 1: keep earlier owner instruction/u);
       assert.match(ownerContext, /Rule 6: zzz/u);
       assert.ok(ownerContext.length > 3_000);
+
+      const withAskQuestion = captureOwnerContext({
+        getBranch: () => [
+          {
+            type: "message",
+            id: "a1",
+            parentId: null,
+            timestamp: "2026-11-23T00:00:01Z",
+            message: fakeAssistant("Option A or B?"),
+          },
+          {
+            type: "message",
+            id: "u1",
+            parentId: "a1",
+            timestamp: "2026-11-23T00:00:02Z",
+            message: { role: "user", content: "a", timestamp: 2 },
+          },
+          {
+            type: "message",
+            id: "aq1",
+            parentId: "u1",
+            timestamp: "2026-11-23T00:00:03Z",
+            message: {
+              role: "toolResult",
+              toolCallId: "tc-aq1",
+              toolName: "ask_question",
+              content: [{ type: "text", text: "User answered: Keep bullet, drop clause." }],
+              isError: false,
+              timestamp: 3,
+              details: {
+                cancelled: false,
+                timedOut: false,
+                answers: [{ id: "q1", question: "Narrow?", answer: "Keep bullet, drop clause." }],
+              },
+            },
+          },
+          {
+            type: "message",
+            id: "aq-afk",
+            parentId: "aq1",
+            timestamp: "2026-11-23T00:00:04Z",
+            message: {
+              role: "toolResult",
+              toolCallId: "tc-aq-afk",
+              toolName: "ask_question",
+              content: [{ type: "text", text: "Mitch is currently AFK." }],
+              isError: false,
+              timestamp: 4,
+              details: { cancelled: false, timedOut: true, answers: [] },
+            },
+          },
+        ],
+      });
+      assert.ok(withAskQuestion !== undefined);
+      assert.match(withAskQuestion, /\[Assistant before owner reply\]\nOption A or B\?/u);
+      assert.match(withAskQuestion, /\[Owner\]\na/u);
+      assert.match(
+        withAskQuestion,
+        /\[Owner answered ask_question\]\nQ: Narrow\?\nA: Keep bullet, drop clause\./u,
+      );
     },
   );
 });

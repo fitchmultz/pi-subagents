@@ -102,43 +102,11 @@ export function splitModelSpec(model: string): {
   return { defaultModel: model };
 }
 
-function extractUserText(content: unknown): string {
-  if (typeof content === "string") {
-    return content.trim();
-  }
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  return content
-    .flatMap((block) =>
-      isRecord(block) && block.type === "text" && typeof block.text === "string"
-        ? [block.text]
-        : [],
-    )
-    .join("\n")
-    .trim();
-}
-
-/** Captures recent owner messages from the parent session branch so the skeptic sees owner intent. */
-export function captureOwnerContext(
-  sessionManager: Pick<ExtensionContext["sessionManager"], "getBranch">,
-): string | undefined {
-  const branch: readonly unknown[] = sessionManager.getBranch();
-  const messages: string[] = [];
-  for (const entry of branch) {
-    if (!isRecord(entry) || entry.type !== "message" || !isRecord(entry.message)) {
-      continue;
-    }
-    if (entry.message.role !== "user") {
-      continue;
-    }
-    const text = extractUserText(entry.message.content);
-    if (text.length > 0) {
-      messages.push(text);
-    }
-  }
-  return messages.length === 0 ? undefined : messages.join("\n---\n");
-}
+export {
+  captureOwnerBranchContext,
+  captureOwnerContext,
+  type OwnerBranchContext,
+} from "./overseer-owner-context.ts";
 
 function hostSettings(
   pi: Pick<ExtensionAPI, "getFlag" | "getSettings">,
@@ -397,7 +365,7 @@ export class OverseerController {
           "off",
           "status",
           "reset",
-          "cloudflare-ai-gateway/claude-haiku-5-5",
+          "cloudflare-ai-gateway/claude-haiku-5-5:low",
           "cloudflare-ai-gateway/gpt-6-luna:medium",
           "google/gemini-3.8-flash:medium",
           "google/gemini-4-hydrogen:medium",
