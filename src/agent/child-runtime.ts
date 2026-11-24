@@ -1,5 +1,7 @@
 import * as fs from "node:fs";
-import * as piAi from "@earendil-works/pi-ai";
+import { findPackageJSON } from "node:module";
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
   CreateAgentSessionRuntimeFactory,
@@ -25,10 +27,51 @@ const NON_MID_CONVO_TOOL_APIS = new Set([
   "bedrock-converse-stream",
 ]);
 
-function supportsMidConvoToolChanges(model: Model<Api>): boolean {
-  const sharedSupport: unknown = Reflect.get(piAi, "getMidConvoToolSupport");
-  if (typeof sharedSupport === "function") {
-    return Reflect.apply(sharedSupport, piAi, [model]) === "changes";
+type MidConvoToolSupportFn = (model: Model<Api>) => unknown;
+const hostToolSupportCache = new Map<string, Promise<MidConvoToolSupportFn | undefined>>();
+
+async function loadHostMidConvoToolSupport(
+  sdkRoot: string,
+): Promise<MidConvoToolSupportFn | undefined> {
+  const cached = hostToolSupportCache.get(sdkRoot);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const loader = (async (): Promise<MidConvoToolSupportFn | undefined> => {
+    try {
+      const manifest = findPackageJSON(
+        "@earendil-works/pi-ai",
+        pathToFileURL(path.join(sdkRoot, "dist/index.js")),
+      );
+      if (manifest === undefined) {
+        return undefined;
+      }
+      const entry = pathToFileURL(path.join(path.dirname(manifest), "dist/index.js")).href;
+      const mod: unknown = await import(entry);
+      const fn: unknown =
+        typeof mod === "object" && mod !== null
+          ? Reflect.get(mod, "getMidConvoToolSupport")
+          : undefined;
+      return typeof fn === "function"
+        ? (model): unknown => {
+            const result: unknown = Reflect.apply(fn, mod, [model]);
+            return result;
+          }
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  hostToolSupportCache.set(sdkRoot, loader);
+  return loader;
+}
+
+function supportsMidConvoToolChanges(
+  model: Model<Api>,
+  sharedSupport: MidConvoToolSupportFn | undefined,
+): boolean {
+  if (sharedSupport !== undefined) {
+    return sharedSupport(model) === "changes";
   }
   // Fallback for upstream @earendil-works/pi-ai hosts that predate getMidConvoToolSupport.
   if (NON_MID_CONVO_TOOL_APIS.has(model.api)) {
@@ -41,8 +84,12 @@ function supportsMidConvoToolChanges(model: Model<Api>): boolean {
   return compat.supportsMidConvoToolChanges === true;
 }
 
-function shouldPreserveParentTools(launch: Pick<Launch, "context">, model: Model<Api>): boolean {
-  return launch.context === "fork" && !supportsMidConvoToolChanges(model);
+function shouldPreserveParentTools(
+  launch: Pick<Launch, "context">,
+  model: Model<Api>,
+  sharedSupport: MidConvoToolSupportFn | undefined,
+): boolean {
+  return launch.context === "fork" && !supportsMidConvoToolChanges(model, sharedSupport);
 }
 
 function exposeGuardedTools(extensions: readonly Extension[]): void {
@@ -200,7 +247,9 @@ export function childRuntime(
       );
     }
     exposeChildTools(services.settingsManager);
-    if (shouldPreserveParentTools(launch, model)) {
+    const sharedToolSupport =
+      launch.context === "fork" ? await loadHostMidConvoToolSupport(launch.sdk) : undefined;
+    if (shouldPreserveParentTools(launch, model, sharedToolSupport)) {
       exposeGuardedTools(services.resourceLoader.getExtensions().extensions);
     }
     return {
