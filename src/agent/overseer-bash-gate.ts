@@ -1,7 +1,39 @@
 import * as path from "node:path";
+import { ShellLineScanner, tokenizeShellSegment } from "./overseer-bash-lexer.ts";
 
 const GIT_VALUE_FLAGS = new Set(["-C", "-c", "--git-dir", "--work-tree"]);
 const GH_VALUE_FLAGS = new Set(["-R", "--repo", "-H", "--hostname"]);
+const GIT_COMMIT_LONG_VALUE_FLAGS = new Set([
+  "--message",
+  "--file",
+  "--author",
+  "--date",
+  "--reuse-message",
+  "--reedit-message",
+  "--fixup",
+  "--squash",
+  "--template",
+  "--cleanup",
+  "--pathspec-from-file",
+  "--trailer",
+]);
+const GIT_COMMIT_SHORT_VALUE_FLAGS = new Set(["m", "F", "c", "C", "t"]);
+const GIT_COMMIT_SHORT_OPTIONAL_VALUE_FLAGS = new Set(["u", "S"]);
+const GIT_PUSH_VALUE_FLAGS = new Set(["-o", "--push-option", "--repo"]);
+const GH_MERGE_VALUE_FLAGS = new Set([
+  "-R",
+  "--repo",
+  "-H",
+  "--hostname",
+  "-b",
+  "--body",
+  "-F",
+  "--body-file",
+  "-t",
+  "--subject",
+  "--match-head-commit",
+  "--author-email",
+]);
 const SHELL_PREFIX_WORDS = new Set(["if", "then", "elif", "else", "do", "!"]);
 const COMMAND_WRAPPERS = new Set([
   "sudo",
@@ -25,6 +57,9 @@ const CLI_GATED_SUBCOMMANDS = new Map<string, string>([
   ["wrangler", "deploy"],
   ["chezmoi", "apply"],
 ]);
+
+type CommandMatcher = (cmd: string, cmdTokens: readonly string[]) => boolean;
+type CommitArgOutcome = "stop" | "bypass" | "consume_next" | "skip";
 
 function nextSubcommand(
   tokens: readonly string[],
@@ -64,6 +99,72 @@ function hasGatedSubcommand(tokens: readonly string[], target: string): boolean 
   return false;
 }
 
+function scanGitCommitShortCluster(arg: string): CommitArgOutcome {
+  for (let j = 1; j < arg.length; j += 1) {
+    const ch = arg[j] ?? "";
+    if (ch === "n") {
+      return "bypass";
+    }
+    if (GIT_COMMIT_SHORT_VALUE_FLAGS.has(ch)) {
+      return j === arg.length - 1 ? "consume_next" : "skip";
+    }
+    if (GIT_COMMIT_SHORT_OPTIONAL_VALUE_FLAGS.has(ch)) {
+      return "skip";
+    }
+  }
+  return "skip";
+}
+
+function classifyGitCommitArg(arg: string): CommitArgOutcome {
+  if (arg === "--") {
+    return "stop";
+  }
+  if (arg === "--no-verify") {
+    return "bypass";
+  }
+  if (GIT_COMMIT_LONG_VALUE_FLAGS.has(arg)) {
+    return "consume_next";
+  }
+  if (!arg.startsWith("-") || arg.startsWith("--") || arg.length <= 1) {
+    return "skip";
+  }
+  return scanGitCommitShortCluster(arg);
+}
+
+function hasGitCommitNoVerify(rest: readonly string[]): boolean {
+  let i = 0;
+  while (i < rest.length) {
+    const outcome = classifyGitCommitArg(rest[i] ?? "");
+    if (outcome === "stop") {
+      return false;
+    }
+    if (outcome === "bypass") {
+      return true;
+    }
+    i += outcome === "consume_next" ? 2 : 1;
+  }
+  return false;
+}
+
+function hasFlagBeforeDoubleDash(
+  args: readonly string[],
+  target: string,
+  valueFlags: ReadonlySet<string>,
+): boolean {
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i] ?? "";
+    if (arg === "--") {
+      return false;
+    }
+    if (arg === target) {
+      return true;
+    }
+    i += valueFlags.has(arg) ? 2 : 1;
+  }
+  return false;
+}
+
 function isHighImpactGit(tokens: readonly string[]): boolean {
   const index = nextSubcommand(tokens, 1, GIT_VALUE_FLAGS);
   const sub = tokens[index];
@@ -72,11 +173,7 @@ function isHighImpactGit(tokens: readonly string[]): boolean {
     return true;
   }
   if (sub === "commit") {
-    return rest.some(
-      (arg) =>
-        arg === "--no-verify" ||
-        (arg.startsWith("-") && !arg.startsWith("--") && arg.includes("n")),
-    );
+    return hasGitCommitNoVerify(rest);
   }
   if (sub === "reset") {
     return rest.includes("--hard");
@@ -101,17 +198,6 @@ function isHighImpactGh(tokens: readonly string[]): boolean {
     (sub === "pr" && action === "merge") ||
     (sub === "release" && (action === "create" || action === "delete"))
   );
-}
-
-function tokenizeSegment(rawSegment: string): string[] {
-  const tokens: string[] = [];
-  for (const raw of rawSegment.trim().split(/\s+/u)) {
-    const cleaned = raw.replace(/^[({!]+/u, "").replace(/[)}]+$/u, "");
-    if (cleaned.length > 0) {
-      tokens.push(cleaned);
-    }
-  }
-  return tokens;
 }
 
 function skipWrapperOptions(tokens: readonly string[], start: number): number {
@@ -139,6 +225,11 @@ function unwrapCommandTokens(tokens: readonly string[]): readonly string[] {
   return i === 0 ? tokens : tokens.slice(i);
 }
 
+function segmentIsShell(rawSegment: string): boolean {
+  const rawCmd = unwrapCommandTokens(tokenizeShellSegment(rawSegment))[0];
+  return rawCmd !== undefined && SHELL_COMMANDS.has(path.posix.basename(rawCmd));
+}
+
 function extractShellDashCPayload(rawSegment: string): string | undefined {
   const match = /\s-[a-zA-Z]*c\s+(?:'([^']*)'|"([^"]*)"|(\S+))/u.exec(rawSegment);
   return match?.[1] ?? match?.[2] ?? match?.[3];
@@ -155,12 +246,37 @@ function matchHighImpactCommand(cmd: string, cmdTokens: readonly string[]): bool
   return gatedSub !== undefined && hasGatedSubcommand(cmdTokens, gatedSub);
 }
 
-function isHighImpactSegment(rawSegment: string, depth: number): boolean {
+function matchProtectionBypassCommand(cmd: string, cmdTokens: readonly string[]): boolean {
+  if (cmd === "git") {
+    const index = nextSubcommand(cmdTokens, 1, GIT_VALUE_FLAGS);
+    const sub = cmdTokens[index];
+    const rest = cmdTokens.slice(index + 1);
+    if (sub === "commit") {
+      return hasGitCommitNoVerify(rest);
+    }
+    if (sub === "push") {
+      return hasFlagBeforeDoubleDash(rest, "--no-verify", GIT_PUSH_VALUE_FLAGS);
+    }
+    return false;
+  }
+  if (cmd === "gh" || cmd.startsWith("gh-")) {
+    const subIndex = nextSubcommand(cmdTokens, 1, GH_VALUE_FLAGS);
+    const actionIndex = nextSubcommand(cmdTokens, subIndex + 1, GH_VALUE_FLAGS);
+    return (
+      cmdTokens[subIndex] === "pr" &&
+      cmdTokens[actionIndex] === "merge" &&
+      hasFlagBeforeDoubleDash(cmdTokens.slice(actionIndex + 1), "--admin", GH_MERGE_VALUE_FLAGS)
+    );
+  }
+  return false;
+}
+
+function matchSegment(rawSegment: string, depth: number, matcher: CommandMatcher): boolean {
   const trimmed = rawSegment.trim();
   if (trimmed === "" || trimmed.startsWith("#")) {
     return false;
   }
-  const cmdTokens = unwrapCommandTokens(tokenizeSegment(trimmed));
+  const cmdTokens = unwrapCommandTokens(tokenizeShellSegment(trimmed));
   const rawCmd = cmdTokens[0];
   if (rawCmd === undefined) {
     return false;
@@ -168,264 +284,30 @@ function isHighImpactSegment(rawSegment: string, depth: number): boolean {
   const cmd = path.posix.basename(rawCmd);
   if (SHELL_COMMANDS.has(cmd) && depth < MAX_SHELL_NESTING) {
     const payload = extractShellDashCPayload(trimmed);
-    return payload !== undefined && scanHighImpactBash(payload, depth + 1);
+    return payload !== undefined && scanBash(payload, depth + 1, matcher);
   }
-  return matchHighImpactCommand(cmd, cmdTokens);
+  return matcher(cmd, cmdTokens);
 }
 
-const LINE_SEPARATORS = new Set([";", "|", "&"]);
-const HEREDOC_AT_POS = /^<<(-)?[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([^\s;|&()<>'"=][^\s;|&()<>'"]*))/u;
-
-type QuoteChar = "'" | '"' | null;
-
-interface LineScanState {
-  readonly quote: QuoteChar;
-  readonly escaped: boolean;
-  readonly inside: boolean;
-}
-
-interface HeredocOpener {
-  readonly delimiter: string;
-  readonly stripTabs: boolean;
-  readonly end: number;
-}
-
-interface PendingHeredoc {
-  readonly delimiter: string;
-  readonly stripTabs: boolean;
-  readonly isShellBody: boolean;
-  readonly bodyLines: string[];
-}
-
-interface ShellScanResult {
-  readonly segments: readonly string[];
-  readonly shellBodies: readonly string[];
-}
-
-function nextQuoteState(ch: string, quote: QuoteChar): QuoteChar {
-  if (ch !== "'" && ch !== '"') {
-    return quote;
-  }
-  return quote === ch ? null : (quote ?? ch);
-}
-
-function advanceScanState(ch: string, state: LineScanState): LineScanState {
-  if (state.escaped) {
-    return { quote: state.quote, escaped: false, inside: true };
-  }
-  if (ch === "\\" && state.quote !== "'") {
-    return { quote: state.quote, escaped: true, inside: true };
-  }
-  const updated = nextQuoteState(ch, state.quote);
-  if (updated !== state.quote) {
-    return { quote: updated, escaped: false, inside: true };
-  }
-  return { quote: state.quote, escaped: false, inside: state.quote !== null };
-}
-
-function isCommentStart(line: string, index: number): boolean {
-  if (line[index] !== "#") {
-    return false;
-  }
-  return index === 0 || /[\s;|&()]/u.test(line[index - 1] ?? "");
-}
-
-function parseHeredocOpener(line: string, index: number): HeredocOpener | undefined {
-  if (!line.startsWith("<<", index) || line[index - 1] === "<" || line[index + 2] === "<") {
-    return undefined;
-  }
-  const match = HEREDOC_AT_POS.exec(line.slice(index));
-  if (match === null) {
-    return undefined;
-  }
-  const delimiter = match[2] ?? match[3] ?? match[4];
-  return delimiter === undefined
-    ? undefined
-    : { delimiter, stripTabs: match[1] === "-", end: index + match[0].length };
-}
-
-function segmentIsShell(rawSegment: string): boolean {
-  const rawCmd = unwrapCommandTokens(tokenizeSegment(rawSegment))[0];
-  return rawCmd !== undefined && SHELL_COMMANDS.has(path.posix.basename(rawCmd));
-}
-
-function isHeredocClosingLine(rawLine: string, heredoc: PendingHeredoc): boolean {
-  const candidate = heredoc.stripTabs ? rawLine.replace(/^\t+/u, "") : rawLine;
-  return candidate === heredoc.delimiter;
-}
-
-/**
- * Linear quote-, comment-, and heredoc-aware segment scanner:
- * - carries open quotes across newlines so multi-line quoted arguments stay one segment
- * - stops at unquoted word-start `#` comments so comment apostrophes never affect later lines
- * - detects unquoted heredocs (excluding `<<<` and `$((...))`), skipping data bodies while
- *   collecting heredoc scripts fed to a shell (`bash <<'EOF'`, `sh <<'EOF'`, etc.) for scanning.
- */
-class ShellLineScanner {
-  private scanState: LineScanState = { quote: null, escaped: false, inside: false };
-  private arithParen = 0;
-  private arithBracket = 0;
-  private allowHeredocs = true;
-  private current = "";
-  private segmentOpeners: HeredocOpener[] = [];
-  private readonly segments: string[] = [];
-  private readonly pendingHeredocs: PendingHeredoc[] = [];
-  private readonly shellBodies: string[] = [];
-
-  scan(command: string): ShellScanResult {
-    for (const rawLine of command.split(/\r?\n/u)) {
-      if (this.pendingHeredocs.length > 0) {
-        this.consumeHeredocLine(rawLine);
-      } else {
-        this.scanLine(rawLine);
-      }
-    }
-    this.flushSegment();
-    this.drainUnterminatedHeredocs();
-    return { segments: this.segments, shellBodies: this.shellBodies };
-  }
-
-  private consumeHeredocLine(rawLine: string): void {
-    const active = this.pendingHeredocs[0];
-    if (active === undefined) {
-      return;
-    }
-    if (isHeredocClosingLine(rawLine, active)) {
-      this.pendingHeredocs.shift();
-      if (active.isShellBody && active.bodyLines.length > 0) {
-        this.shellBodies.push(active.bodyLines.join("\n"));
-      }
-      return;
-    }
-    active.bodyLines.push(rawLine);
-  }
-
-  /** Fail safe: if a heredoc never closes, scan its retained lines as ordinary commands. */
-  private drainUnterminatedHeredocs(): void {
-    const fallbackLines: string[] = [];
-    for (const heredoc of this.pendingHeredocs) {
-      fallbackLines.push(...heredoc.bodyLines);
-    }
-    this.pendingHeredocs.length = 0;
-    if (fallbackLines.length === 0) {
-      return;
-    }
-    this.allowHeredocs = false;
-    this.scanState = { quote: null, escaped: false, inside: false };
-    this.arithParen = 0;
-    this.arithBracket = 0;
-    for (const line of fallbackLines) {
-      this.scanLine(line);
-    }
-    this.flushSegment();
-  }
-
-  private flushSegment(): void {
-    const seg = this.current;
-    this.current = "";
-    if (this.segmentOpeners.length > 0) {
-      const isShellBody = segmentIsShell(seg);
-      for (const opener of this.segmentOpeners) {
-        this.pendingHeredocs.push({
-          delimiter: opener.delimiter,
-          stripTabs: opener.stripTabs,
-          isShellBody,
-          bodyLines: [],
-        });
-      }
-      this.segmentOpeners = [];
-    }
-    if (seg.length > 0) {
-      this.segments.push(seg);
-    }
-  }
-
-  private scanLine(line: string): void {
-    let i = 0;
-    while (i < line.length) {
-      const next = this.stepChar(line, i);
-      if (next < 0) {
-        return;
-      }
-      i = next;
-    }
-    const continued = this.scanState.escaped;
-    this.scanState = { quote: this.scanState.quote, escaped: false, inside: false };
-    if (this.scanState.quote !== null || continued) {
-      this.current += "\n";
-    } else {
-      this.flushSegment();
-    }
-  }
-
-  private stepArith(line: string, i: number): number {
-    if (line.startsWith("((", i)) {
-      this.arithParen += 1;
-      this.current += "((";
-      return i + 2;
-    }
-    if (this.arithParen > 0 && line.startsWith("))", i)) {
-      this.arithParen -= 1;
-      this.current += "))";
-      return i + 2;
-    }
-    if (line.startsWith("$[", i)) {
-      this.arithBracket += 1;
-      this.current += "$[";
-      return i + 2;
-    }
-    if (this.arithBracket > 0 && line[i] === "]") {
-      this.arithBracket -= 1;
-      this.current += "]";
-      return i + 1;
-    }
-    return -1;
-  }
-
-  private canOpenHeredoc(): boolean {
-    return this.allowHeredocs && this.arithParen === 0 && this.arithBracket === 0;
-  }
-
-  private stepChar(line: string, i: number): number {
-    const ch = line[i] ?? "";
-    this.scanState = advanceScanState(ch, this.scanState);
-    if (this.scanState.inside) {
-      this.current += ch;
-      return i + 1;
-    }
-    if (isCommentStart(line, i)) {
-      this.flushSegment();
-      return -1;
-    }
-    const arithNext = this.stepArith(line, i);
-    if (arithNext >= 0) {
-      return arithNext;
-    }
-    const opener = this.canOpenHeredoc() ? parseHeredocOpener(line, i) : undefined;
-    if (opener !== undefined) {
-      this.segmentOpeners.push(opener);
-      this.current += line.slice(i, opener.end);
-      return opener.end;
-    }
-    if (LINE_SEPARATORS.has(ch)) {
-      this.flushSegment();
-      return i + 1;
-    }
-    this.current += ch;
-    return i + 1;
-  }
-}
-
-function scanHighImpactBash(command: string, depth: number): boolean {
-  const { segments, shellBodies } = new ShellLineScanner().scan(command);
-  if (segments.some((segment) => isHighImpactSegment(segment, depth))) {
+function scanBash(command: string, depth: number, matcher: CommandMatcher): boolean {
+  const { segments, shellBodies } = new ShellLineScanner(segmentIsShell).scan(command);
+  if (segments.some((segment) => matchSegment(segment, depth, matcher))) {
     return true;
   }
   return (
-    depth < MAX_SHELL_NESTING && shellBodies.some((body) => scanHighImpactBash(body, depth + 1))
+    depth < MAX_SHELL_NESTING && shellBodies.some((body) => scanBash(body, depth + 1, matcher))
   );
 }
 
 export function isHighImpactBash(command: string): boolean {
-  return scanHighImpactBash(command, 0);
+  return scanBash(command, 0, matchHighImpactCommand);
+}
+
+/**
+ * Reports whether a shell command invokes a real protection-bypass flag (`gh pr merge --admin`,
+ * `git commit --no-verify` / `-n`, or `git push --no-verify`), ignoring quoted commit/PR bodies
+ * and operands after `--`.
+ */
+export function hasProtectionBypassFlag(command: string): boolean {
+  return scanBash(command, 0, matchProtectionBypassCommand);
 }

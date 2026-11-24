@@ -13,7 +13,7 @@ import {
   type OwnerBranchContext,
   type OverseerState,
 } from "./overseer.ts";
-import { isHighImpactBash } from "./overseer-bash-gate.ts";
+import { hasProtectionBypassFlag, isHighImpactBash } from "./overseer-bash-gate.ts";
 import {
   assistantText,
   extractJsonObject,
@@ -157,8 +157,7 @@ export function extractParentAction(
 
 const normalizeWhitespace = (text: string): string => text.replace(/\s+/gu, " ").trim();
 
-const BYPASS_FLAG_PATTERN =
-  /(?:^|\s)(?:--admin|--no-verify)(?:\s|$)|\bgit\b[^;\n|&]*\bcommit\b[^;\n|&]*\s-[a-z]*n[a-z]*(?:\s|$)/u;
+const STANDALONE_BYPASS_FLAG = /^(?:--admin|--no-verify)$/u;
 
 function matchesOwnerGroundable(
   ownerQuote: string,
@@ -188,7 +187,9 @@ function isParentFindingGrounded(
     return false;
   }
   if (finding.kind === "bypass_protection") {
-    if (!BYPASS_FLAG_PATTERN.test(normalizedActionQuote)) {
+    const excerptHasBypass =
+      hasProtectionBypassFlag(actionQuote) || STANDALONE_BYPASS_FLAG.test(normalizedActionQuote);
+    if (!hasProtectionBypassFlag(actionText) || !excerptHasBypass) {
       return false;
     }
     return ownerQuote.length === 0 || matchesOwnerGroundable(ownerQuote, ownerGroundable);

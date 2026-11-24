@@ -86,6 +86,9 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
       "git -C wt push origin feat",
       "git commit --no-verify -m 'skip hooks'",
       "git commit -nm 'skip hooks'",
+      'git commit -m "" --no-verify',
+      'git commit -am "msg" -n',
+      "(git commit --no-verify -m 'skip hooks')",
       "git reset --hard HEAD~1",
       "git reset HEAD~1 --hard",
       "git clean -fd",
@@ -141,6 +144,14 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
       "git status --short",
       "git commit -m 'local work'",
       'git commit -m "feat: gate bash\n\ngit push and gh pr merge now need approval."',
+      'git commit -m "clarify --no-verify gating"',
+      'git commit -m "document -n short flag"',
+      'git commit -m "-n"',
+      'git commit -m"--no-verify"',
+      `git commit -m"don't skip hooks"`,
+      'git commit -m "(keep --no-verify)"',
+      'git commit -unormal -m "normal commit"',
+      "git commit -- -n",
       'gh pr create --body "Before:\n\ngh pr merge 12\n\nAfter: gated"',
       "git commit -m 'subject\n\nnpm publish is gated'",
       "npm run test:unit",
@@ -329,6 +340,47 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
       assert.ok(bypass.ok);
       assert.equal(bypass.blocking.length, 1);
       assert.equal(bypass.droppedUngrounded, 1);
+
+      // Quoted `--no-verify` / `--admin` inside commit messages or PR bodies must never ground `bypass_protection`.
+      const quotedBypass = validateParentFindings(
+        {
+          action: "block",
+          findings: [
+            {
+              kind: "bypass_protection",
+              ownerExcerpt: "",
+              actionExcerpt: "--no-verify",
+              why: "Quoted inside commit message; not a real bypass.",
+              blocking: true,
+            },
+          ],
+        },
+        ["Keep edits scoped to src/."],
+        'git commit -m "clarify --no-verify gating"',
+      );
+      assert.ok(quotedBypass.ok);
+      assert.equal(quotedBypass.blocking.length, 0);
+      assert.equal(quotedBypass.droppedUngrounded, 1);
+
+      const quotedPrBodyBypass = validateParentFindings(
+        {
+          action: "block",
+          findings: [
+            {
+              kind: "bypass_protection",
+              ownerExcerpt: "",
+              actionExcerpt: "--admin",
+              why: "Quoted inside PR body; not a real bypass.",
+              blocking: true,
+            },
+          ],
+        },
+        ["Keep edits scoped to src/."],
+        'gh pr merge 42 --squash -b "do not use --admin"',
+      );
+      assert.ok(quotedPrBodyBypass.ok);
+      assert.equal(quotedPrBodyBypass.blocking.length, 0);
+      assert.equal(quotedPrBodyBypass.droppedUngrounded, 1);
 
       // `action: "ok"` with grounded findings preserves them as non-blocking heads-up notes.
       const okWithNote = validateParentFindings(
