@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.74 - 2026-11-24
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix(overseer): preserve chronological owner timeline, ask_question answers, and calibrated skeptic grounding (#501) ([cca5203](https://github.com/fitchmultz/pi-subagents/commit/cca52031963a77b3ca09c72982507ee01b68f3e9))
+
+### What's Changed
+
+- fix(overseer): preserve chronological owner timeline, ask_question answers, and calibrated skeptic grounding by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/501
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.73...v0.52.74
+
 ## 0.52.73 - 2026-11-24
 
 <!-- npm-release:unreleased:start -->
