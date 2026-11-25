@@ -22,7 +22,7 @@ import { AgyPeer, type AgyHookInput, type AgyHookResponse } from "./peer.ts";
 
 const MAX_CONTROL_LINE_BYTES = 256 * 1024;
 const SOCKET_PROBE_TIMEOUT_MS = 250;
-const CONTROL_RECLAIM_FALLBACK_MS = 1000;
+const CONTROL_RECLAIM_FALLBACK_MS = 5000;
 const SUBAGENT_TRIGGER_TOOLS = new Set(["invoke_subagent", "swarm", "run_workflow"]);
 
 function isControlSocketLive(socketPath: string): Promise<boolean> {
