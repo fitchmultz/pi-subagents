@@ -253,9 +253,10 @@ skipped, and an entry whose value is not an exposure sets none.
   a child that `continue` starts again keeps the tools it declared or loaded
   before. The map decides the tools that conversation never declared.
 - For a `context: "fork"` child whose target model does not support
-  cache-preserving mid-conversation tool changes (such as Google Gemini 4 /
-  `google-generative-ai`, `google-vertex`, `bedrock-converse-stream`, or
-  additions-only models), the child keeps `delegate`/`agent_runs` declared
+  cache-preserving mid-conversation tool changes (such as models using
+  `google-generative-ai`, `google-interactions`, `google-vertex`, or
+  `bedrock-converse-stream`, and models that support only tool additions),
+  the child keeps `delegate`/`agent_runs` declared
   (while still blocking calls in `tool_call`) so Turn 1 preserves the parent's
   cached tool prefix. `subagents.toolExposure` still applies: explicit `hidden`
   entries continue to deny/remove tools, while `deferred`, `codemode`, and

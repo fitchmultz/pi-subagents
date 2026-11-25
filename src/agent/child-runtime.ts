@@ -23,6 +23,7 @@ const EDIT_TOOLS = new Set(["edit", "write", "replace_text", "write_files", "app
 const CHILD_GUARDED_TOOLS = new Set(["delegate", "agent_runs"]);
 const NON_MID_CONVO_TOOL_APIS = new Set([
   "google-generative-ai",
+  "google-interactions",
   "google-vertex",
   "bedrock-converse-stream",
 ]);
