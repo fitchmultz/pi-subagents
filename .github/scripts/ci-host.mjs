@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import semver from "semver";
 import { isRecord } from "../../src/shared/unknown.ts";
 
 /**
@@ -68,10 +69,10 @@ try {
   if (flavor === "fork") {
     assert.equal(host.provenance.ref, process.env.PI_FORK_REF);
   }
-  const [major = 0, minor = 0] = host.version.replace(/-.*$/, "").split(".").map(Number);
+  const version = semver.coerce(host.version);
   assert.ok(
-    major > 1 || (major === 1 && minor >= 6),
-    "Resolved latest host is below the supported 1.6.0 floor",
+    version !== null && semver.gte(version, "1.6.1"),
+    "Resolved latest host is below the supported 1.6.1 floor",
   );
   const selected = selectDevelopmentHost(development, host, env);
   const testEnv = {

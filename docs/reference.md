@@ -25,7 +25,7 @@ model must be available; there is no hidden alternate-model retry catalog.
 `thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 It overrides parent effort for this child without changing the parent. It works
 with an omitted model or a literal model ID on every supported host, including
-official Pi 1.6.0. Omission preserves inherited effort (or the configured overseer
+official Pi 1.6.1. Omission preserves inherited effort (or the configured overseer
 model's thinking when `model` is omitted and `/overseer-model` configures one). Pi applies its native
 model-capability clamping; the launch receipt records the requested value, not
 proof of the child's effective effort.
@@ -39,7 +39,7 @@ unknown IDs and invalid suffixes fail without fuzzy matching or another provider
 Native resolution follows Pi's case-insensitive ID matching. Pi still applies the
 selected model's native thinking capabilities.
 
-Official Pi, including 1.6.0, does not export that resolver. Older fork runtimes also
+Official Pi, including 1.6.1, does not export that resolver. Older fork runtimes also
 lack the export. Those hosts retain case-sensitive literal-ID overrides and
 support the `thinking` field. Suffix requests fail with an upgrade message rather
 than being parsed by an extension-side replacement. Suffix support requires a
