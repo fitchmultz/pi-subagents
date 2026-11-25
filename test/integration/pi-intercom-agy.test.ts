@@ -2,7 +2,7 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import {
+import fs, {
   chmodSync,
   existsSync,
   mkdirSync,
@@ -10,7 +10,10 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
+  type WatchListener,
+  type WatchOptionsWithStringEncoding,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -18,7 +21,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test as nodeTest, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { AgyBridgeHub } from "../../src/pi-intercom/agy/hub.ts";
-import { agyPeerId, agyWakeDir, agyWakeFilePath } from "../../src/pi-intercom/agy/paths.ts";
+import {
+  agyPeerId,
+  agyWakeDir,
+  agyWakeFilePath,
+  prepareAgyControlSocketPath,
+} from "../../src/pi-intercom/agy/paths.ts";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import { agyControlSocketPath } from "../../src/pi-intercom/broker/paths.ts";
 import { RECIPIENT_TURN_FAILED_ATTACHMENT } from "../../src/pi-intercom/runtime-types.ts";
@@ -480,5 +488,61 @@ nodeTest(
     t.after(() => probeSuccessor.destroy());
     await once(probeSuccessor, "connect");
     probeSuccessor.end();
+  },
+);
+
+nodeTest(
+  "AgyBridgeHub rechecks a watcher notification received during a live socket probe",
+  async (t) => {
+    isolatedAgent(t);
+    const lsPid = process.pid + 100_000;
+    const socketPath = prepareAgyControlSocketPath(lsPid);
+    const owner = net.createServer();
+    t.after(() => {
+      owner.close();
+    });
+    owner.listen(socketPath);
+    await once(owner, "listening");
+
+    const watch = fs.watch;
+    let notify: (() => void) | undefined;
+    const watchMock = t.mock.method(
+      fs,
+      "watch",
+      (dir: string, options: WatchOptionsWithStringEncoding, listener: WatchListener<string>) => {
+        notify = () => listener("rename", path.basename(socketPath));
+        return watch(dir, options);
+      },
+    );
+    syncBuiltinESMExports();
+    t.after(() => {
+      watchMock.mock.restore();
+      syncBuiltinESMExports();
+    });
+    // Only the watcher may trigger a retry in this test; the fallback clock never advances.
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const hub = new AgyBridgeHub(lsPid);
+    t.after(() => hub.close());
+    assert.equal(await hub.start(), null);
+    assert.ok(notify);
+    const emitChange = notify;
+
+    const connect = net.createConnection;
+    t.mock.method(
+      net,
+      "createConnection",
+      () => {
+        const probe = connect(socketPath);
+        probe.once("connect", () => {
+          // Deliver the unlink notification before the hub consumes this successful connection.
+          owner.close();
+          emitChange();
+        });
+        return probe;
+      },
+      { times: 1 },
+    );
+    emitChange();
+    await waitFor(() => (hub.controlSocketPath === socketPath ? true : undefined));
   },
 );
