@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.79 - 2026-11-25
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix: improve delegate, agent_runs, and intercom error recovery (#507) ([457f986](https://github.com/fitchmultz/pi-subagents/commit/457f986d193b855702e37882aecc01e15fac0271))
+
+### What's Changed
+
+- fix: improve delegate, agent_runs, and intercom error recovery by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/507
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.78...v0.52.79
+
 ## 0.52.78 - 2026-11-25
 
 <!-- npm-release:unreleased:start -->
