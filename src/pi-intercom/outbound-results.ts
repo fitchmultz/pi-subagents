@@ -13,7 +13,7 @@ import {
 } from "./tool-results.ts";
 import { toolError, toolText } from "./tool-arguments.ts";
 
-function outboundError(
+export function outboundError(
   message: string,
   reasonCode: string,
   actions: readonly RecoveryAction[],

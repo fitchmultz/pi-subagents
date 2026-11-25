@@ -384,7 +384,7 @@ class AgentRuntime {
   }
   private async continueSaved(input: RunsInput & { id: string }, context: ExtensionContext) {
     if (input.prompt === undefined) {
-      throw new Error(CONTINUE_PROMPT_REQUIRED);
+      throw new Error("continue requires the entire new prompt.");
     }
     const { launch, kind } = savedContinuation({
       id: input.id,

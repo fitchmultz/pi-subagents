@@ -3655,7 +3655,7 @@ for (const afterTool of [false, true]) {
         (error: unknown) => {
           assert.match(
             text(property(error, "message")),
-            /Recipient turn failed: Fixture provider unavailable/,
+            /Recipient turn failed: Fixture provider unavailable\nRun `intercom` with `action: "status"`\. Send recovery context after the recipient is healthy\./,
           );
           assert.equal(at(error, "details", "reasonCode"), "recipient_turn_failed");
           return true;
@@ -4787,6 +4787,12 @@ nodeTest(
       {
         params: { action: "send", to: "not-connected", message: "Missing target" },
         expected: /not delivered/,
+        reason: "delivery_failed",
+      },
+      {
+        params: { action: "ask", to: "not-connected", message: "Missing target" },
+        expected:
+          /Ask to "not-connected" was not sent: connected session not found\.\nRun `intercom` with `action: "list"`\. Retry with an exact active recipient target\./,
         reason: "delivery_failed",
       },
       {

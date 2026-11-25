@@ -6,6 +6,7 @@ import { formatAttachments, normalizeLine, pendingAskPreview } from "../message-
 import {
   askFailure,
   deliveryFailure,
+  outboundError,
   replyDeliveryFailure,
   replyFailure,
   replySent,
@@ -21,7 +22,7 @@ import {
 } from "../runtime-types.ts";
 import { formatSessionTarget } from "../session-targets.ts";
 import { sendOptions, toolError, toolText, validateIntercomArguments } from "../tool-arguments.ts";
-import { failureDetails, type SendProgress } from "../tool-results.ts";
+import type { SendProgress } from "../tool-results.ts";
 import type { IntercomTransport } from "../transport.ts";
 import type { LastMessageResult, Message, SendResult } from "../types.ts";
 import {
@@ -79,16 +80,14 @@ function formatAskReply(to: string, reply: Message, questionId: string): ToolRes
       (attachment) => attachment.name === RECIPIENT_TURN_FAILED_ATTACHMENT,
     ) === true
   ) {
-    return toolError(
+    return outboundError(
       text,
-      failureDetails(
-        "recipient_turn_failed",
-        [
-          { action: "status" },
-          { action: "send", guidance: "Send recovery context after the recipient is healthy." },
-        ],
-        { error: true, recipientTurnFailed: true, messageId: reply.id, replyTo: questionId },
-      ),
+      "recipient_turn_failed",
+      [
+        { action: "status" },
+        { action: "send", guidance: "Send recovery context after the recipient is healthy." },
+      ],
+      { error: true, recipientTurnFailed: true, messageId: reply.id, replyTo: questionId },
     );
   }
   const attachments = reply.content.attachments;
@@ -325,16 +324,14 @@ async function prepareLocalAskTarget(
   }
   if (target === null) {
     return {
-      error: toolError(
+      error: outboundError(
         `Ask to "${to}" was not sent: connected session not found.`,
-        failureDetails(
-          "delivery_failed",
-          [
-            { action: "list" },
-            { action: "send", guidance: "Retry with an exact active recipient target." },
-          ],
-          { accepted: false, delivered: false },
-        ),
+        "delivery_failed",
+        [
+          { action: "list" },
+          { action: "send", guidance: "Retry with an exact active recipient target." },
+        ],
+        { accepted: false, delivered: false },
       ),
     };
   }

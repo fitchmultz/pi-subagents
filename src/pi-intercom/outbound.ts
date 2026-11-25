@@ -15,10 +15,11 @@ import {
 } from "./runtime-types.ts";
 import type { Message } from "./types.ts";
 import { formatAttachments } from "./message-format.ts";
-import { failureDetails, type SendProgress } from "./tool-results.ts";
+import type { SendProgress } from "./tool-results.ts";
 import {
   askFailure,
   deliveryFailure,
+  outboundError,
   replyDeliveryFailure,
   replyFailure,
   replySent,
@@ -167,16 +168,14 @@ export class IntercomOutbound {
         (attachment) => attachment.name === RECIPIENT_TURN_FAILED_ATTACHMENT,
       ) === true
     ) {
-      return toolError(
+      return outboundError(
         text,
-        failureDetails(
-          "recipient_turn_failed",
-          [
-            { action: "status" },
-            { action: "send", guidance: "Send recovery context after the recipient is healthy." },
-          ],
-          { error: true, recipientTurnFailed: true, messageId: reply.id, replyTo: questionId },
-        ),
+        "recipient_turn_failed",
+        [
+          { action: "status" },
+          { action: "send", guidance: "Send recovery context after the recipient is healthy." },
+        ],
+        { error: true, recipientTurnFailed: true, messageId: reply.id, replyTo: questionId },
       );
     }
     const attachments = reply.content.attachments;
@@ -198,16 +197,14 @@ export class IntercomOutbound {
     }
     if (target === null) {
       return {
-        error: toolError(
+        error: outboundError(
           `Ask to "${to}" was not sent: connected session not found.`,
-          failureDetails(
-            "delivery_failed",
-            [
-              { action: "list" },
-              { action: "send", guidance: "Retry with an exact active recipient target." },
-            ],
-            { accepted: false, delivered: false },
-          ),
+          "delivery_failed",
+          [
+            { action: "list" },
+            { action: "send", guidance: "Retry with an exact active recipient target." },
+          ],
+          { accepted: false, delivered: false },
         ),
       };
     }
