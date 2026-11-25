@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.78 - 2026-11-25
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- feat(subagents): preserve parent tools for forked google-interactions children (#506) ([6513468](https://github.com/fitchmultz/pi-subagents/commit/65134684d1014af40e9db3c6157c6bd7afa38cc3))
+
+### What's Changed
+
+- feat(subagents): preserve parent tools for forked google-interactions children by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/506
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.77...v0.52.78
+
 ## 0.52.77 - 2026-11-25
 
 <!-- npm-release:unreleased:start -->
