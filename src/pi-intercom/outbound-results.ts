@@ -13,40 +13,42 @@ import {
 } from "./tool-results.ts";
 import { toolError, toolText } from "./tool-arguments.ts";
 
+export function outboundError(
+  message: string,
+  reasonCode: string,
+  actions: readonly RecoveryAction[],
+  details: Readonly<Record<string, unknown>>,
+): ToolResultLike {
+  const hint = actions
+    .map(({ action, guidance }) => guidance ?? `Run \`intercom\` with \`action: "${action}"\`.`)
+    .join(" ");
+  return toolError(`${message}\n${hint}`, failureDetails(reasonCode, actions, details));
+}
+
 /** What `send`, `ask` and `reply` answer, for a local target and for one on another device. */
 export function sendFailure(error: unknown, progress: SendProgress): ToolResultLike {
   const facts = sendErrorFacts(error, progress);
-  return toolError(
+  return outboundError(
     `Failed to send: ${errorMessage(error)}`,
-    failureDetails(
-      recoveryCode(error, "send_failed"),
-      [
-        { action: "list" },
-        {
-          action: "send",
-          guidance: sendRecoveryGuidance(facts, "message"),
-        },
-      ],
-      { error: true, ...facts },
-    ),
+    recoveryCode(error, "send_failed"),
+    [{ action: "list" }, { action: "send", guidance: sendRecoveryGuidance(facts, "message") }],
+    { error: true, ...facts },
   );
 }
 export function deliveryFailure(to: string, result: SendResult): ToolResultLike {
-  return toolError(
+  return outboundError(
     `Message to "${to}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}`,
-    failureDetails(
-      "delivery_failed",
-      [
-        { action: "list" },
-        { action: "send", guidance: "Retry with an exact active recipient target." },
-      ],
-      {
-        messageId: result.id,
-        accepted: result.accepted,
-        delivered: false,
-        reason: result.reason,
-      },
-    ),
+    "delivery_failed",
+    [
+      { action: "list" },
+      { action: "send", guidance: "Retry with an exact active recipient target." },
+    ],
+    {
+      messageId: result.id,
+      accepted: result.accepted,
+      delivered: false,
+      reason: result.reason,
+    },
   );
 }
 export function sendHint(params: IntercomToolParams): string {
@@ -61,15 +63,17 @@ export function askFailure(
 ): ToolResultLike {
   const { to, questionId, progress } = input;
   if (error instanceof WakeFailedError) {
-    return toolError(
+    return outboundError(
       `The parked child could not be woken: ${error.message} Your ask is still queued and may arrive after a later wake. Check the recipient before sending it again.`,
-      failureDetails("wake_failed", [{ action: "list" }, { action: "status" }], {
+      "wake_failed",
+      [{ action: "list" }, { action: "status" }],
+      {
         error: true,
         messageId: questionId,
         accepted: true,
         delivered: false,
         queued: true,
-      }),
+      },
     );
   }
   if (error instanceof AskDeliveryError) {
@@ -77,24 +81,19 @@ export function askFailure(
     return { ...result, details: { ...result.details, error: true } };
   }
   const facts = sendErrorFacts(error, progress);
-  return toolError(
+  return outboundError(
     `Failed: ${errorMessage(error)}`,
-    failureDetails(
-      recoveryCode(error, "ask_failed"),
-      [
-        { action: "status" },
-        { action: "list" },
-        {
-          action: "send",
-          guidance: sendRecoveryGuidance(facts, "ask"),
-        },
-      ],
-      {
-        error: true,
-        ...(questionId !== undefined && questionId !== "" ? { messageId: questionId } : {}),
-        ...facts,
-      },
-    ),
+    recoveryCode(error, "ask_failed"),
+    [
+      { action: "status" },
+      { action: "list" },
+      { action: "send", guidance: sendRecoveryGuidance(facts, "ask") },
+    ],
+    {
+      error: true,
+      ...(questionId !== undefined && questionId !== "" ? { messageId: questionId } : {}),
+      ...facts,
+    },
   );
 }
 export function replySent(sender: string, replyTo: string, result: SendResult): ToolResultLike {
@@ -117,26 +116,24 @@ export function replyDeliveryFailure(
   replyTo: string,
   result: SendResult,
 ): ToolResultLike {
-  return toolError(
+  return outboundError(
     `Reply to "${sender}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}`,
-    failureDetails(
-      "delivery_failed",
-      [
-        { action: "pending" },
-        {
-          action: "send",
-          guidance: "Send a new message if the original sender is no longer available.",
-        },
-      ],
+    "delivery_failed",
+    [
+      { action: "pending" },
       {
-        messageId: result.id,
-        accepted: result.accepted,
-        delivered: false,
-        queued: result.queued === true,
-        reason: result.reason,
-        replyTo,
+        action: "send",
+        guidance: "Send a new message if the original sender is no longer available.",
       },
-    ),
+    ],
+    {
+      messageId: result.id,
+      accepted: result.accepted,
+      delivered: false,
+      queued: result.queued === true,
+      reason: result.reason,
+      replyTo,
+    },
   );
 }
 export function replyFailure(
@@ -156,12 +153,9 @@ export function replyFailure(
           },
         ]
       : [{ action: "pending" }, { action: "list" }];
-  return toolError(
-    `Failed to reply: ${errorMessage(error)}`,
-    failureDetails(reason, actions, {
-      error: true,
-      ...((replyTo ?? "") !== "" ? { replyTo } : {}),
-      ...sendErrorFacts(error, progress),
-    }),
-  );
+  return outboundError(`Failed to reply: ${errorMessage(error)}`, reason, actions, {
+    error: true,
+    ...((replyTo ?? "") !== "" ? { replyTo } : {}),
+    ...sendErrorFacts(error, progress),
+  });
 }

@@ -4,19 +4,34 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { test as nodeTest, type TestContext } from "node:test";
-import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+  createFauxCore,
+  createProvider,
+  fauxAssistantMessage,
+  fauxToolCall,
+} from "@earendil-works/pi-ai";
+import {
+  createAgentSessionFromServices,
+  createAgentSessionServices,
+  DefaultResourceLoader,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import agents from "../../src/agent/index.ts";
 import type { BackgroundWork } from "../../src/agent/background-work.ts";
 import { attachmentSchema, type Launch, type Result } from "../../src/agent/contracts.ts";
+import { prepareLaunch, type LaunchContext } from "../../src/agent/launch.ts";
 import { ownIdentity } from "../../src/agent/process.ts";
 import {
   conversation,
+  list,
   ownerDirectory,
   read,
   runDirectory,
   write,
 } from "../../src/agent/storage.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
+import { textAt } from "../support/assertions.ts";
 import { until } from "../support/observation-child.ts";
 
 function isBackgroundWork(value: unknown): value is BackgroundWork {
@@ -149,6 +164,170 @@ function writeSettledResult(base: string, launch: Launch): void {
   };
   write(path.join(runDirectory(base, launch.id), "result.json"), result);
 }
+
+nodeTest("native delegate and agent_runs tool calls explain how to recover", async (t) => {
+  const cwd = process.cwd();
+  const agentDir = getPiAgentDir();
+  const sessionManager = SessionManager.create(cwd, agentDir);
+  const owner = sessionManager.getSessionId();
+  const base = ownerDirectory(agentDir, owner);
+  const id = "12345678-1234-4234-8234-123456789abc";
+  const shortId = "12345678";
+  const foreignId = "23456789-1234-4234-8234-123456789abc";
+  const settled = writeLaunch(base, owner, id);
+  fs.writeFileSync(settled.sessionFile, "", { flag: "wx" });
+  writeSettledResult(base, settled);
+  sessionManager.appendCustomEntry("subagent-run", { runId: foreignId, ownerSessionId: "foreign" });
+
+  const core = createFauxCore({
+    api: "anthropic-messages",
+    provider: "delegate-recovery",
+    models: [{ id: "active-model", reasoning: true }],
+  });
+  const [model] = core.models;
+  core.setResponses([
+    fauxAssistantMessage(
+      [
+        fauxToolCall("delegate", { prompt: "child", model: "null", thinking: "null" }),
+        fauxToolCall("delegate", { prompt: "child", thinking: "NULL" }),
+        fauxToolCall("delegate", { prompt: "child", model: "NULL" }),
+        fauxToolCall("delegate", { prompt: "child", model: "delegate-recovery/missing" }),
+        fauxToolCall("agent_runs", { action: "continue", id: shortId, prompt: "resume" }),
+        fauxToolCall("agent_runs", { action: "continue", id: foreignId, prompt: "resume" }),
+        fauxToolCall("agent_runs", { action: "continue", id }),
+      ],
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("Done"),
+  ]);
+  const services = await createAgentSessionServices({
+    cwd,
+    agentDir,
+    settingsManager: SettingsManager.inMemory(),
+    resourceLoaderOptions: {
+      noExtensions: true,
+      extensionFactories: [
+        agents,
+        (pi) => {
+          pi.registerProvider(
+            createProvider({
+              id: core.provider,
+              auth: { apiKey: { name: "Faux", resolve: async () => ({ auth: {} }) } },
+              models: core.models,
+              api: { stream: core.stream, streamSimple: core.streamSimple },
+            }),
+          );
+          pi.on("tool_call", (event) => {
+            if (event.toolName === "delegate" && event.input.model === undefined) {
+              assert.deepEqual(event.input, { prompt: "child" });
+              return { block: true, reason: "Recovered arguments reached the tool hook." };
+            }
+            return;
+          });
+        },
+      ],
+    },
+  });
+  const { session } = await createAgentSessionFromServices({ services, sessionManager, model });
+  t.after(async () => {
+    await session.abort();
+    session.dispose();
+  });
+  await session.bindExtensions({ mode: "print" });
+  await session.prompt("Try the recovery cases", { expandPromptTemplates: false });
+  const results = session.messages.filter((message) => message.role === "toolResult");
+  assert.deepEqual(
+    results.map((result) => result.isError),
+    Array.from({ length: 7 }, () => true),
+  );
+  const messages = results.map((result) => textAt(result.content));
+  assert.equal(messages[0], "Recovered arguments reached the tool hook.");
+  assert.match(messages[1] ?? "", /Validation failed for tool "delegate".*\n.*thinking/);
+  assert.equal(messages[2], "model must be an exact provider/model ID.");
+  assert.match(
+    messages[3] ?? "",
+    /Model delegate-recovery\/missing is unavailable; no fallback was used\./,
+  );
+  assert.match(messages[3] ?? "", /Omit model to inherit the session or Overseer default/);
+  assert.match(messages[3] ?? "", /Available models: delegate-recovery\/active-model/);
+  const missingMessage = messages[4] ?? "";
+  assert.match(missingMessage, /Missing saved native owner run; nothing was launched/);
+  assert.ok(missingMessage.includes(shortId));
+  assert.match(missingMessage, /agent_runs with action: "list".*exact full run UUID/);
+  const foreignMessage = messages[5] ?? "";
+  assert.match(
+    foreignMessage,
+    /Foreign legacy run belongs to another session; this session cannot continue it/,
+  );
+  assert.ok(foreignMessage.includes(foreignId));
+  assert.doesNotMatch(foreignMessage, /action: "list"/);
+  assert.match(messages[6] ?? "", /Pass prompt or use action: "inspect".*paused at a checkpoint/);
+  assert.deepEqual(list(base), [id]);
+});
+
+nodeTest(
+  "unavailable delegation model hints prefer the requested provider and stay bounded",
+  async () => {
+    const cwd = process.cwd();
+    const agentDir = getPiAgentDir();
+    const same = createFauxCore({
+      api: "anthropic-messages",
+      provider: "chosen",
+      models: Array.from({ length: 9 }, (_, index) => ({ id: `model-${index}` })),
+    }).models;
+    const other = createFauxCore({
+      api: "anthropic-messages",
+      provider: "other",
+      models: [{ id: "model-other" }],
+    }).models;
+    const models = [...other, ...same];
+    const modelRegistry = {
+      find: (provider: string, id: string) =>
+        models.find((model) => model.provider === provider && model.id === id),
+      getAll: () => models,
+    };
+    const run = (model: string, getAvailable?: LaunchContext["modelRegistry"]["getAvailable"]) =>
+      prepareLaunch({
+        input: { prompt: "child", model },
+        context: {
+          cwd,
+          isProjectTrusted: () => true,
+          model: undefined,
+          modelRegistry: {
+            ...modelRegistry,
+            ...(getAvailable === undefined ? {} : { getAvailable }),
+          },
+          sessionManager: SessionManager.inMemory(cwd),
+        },
+        base: ownerDirectory(agentDir, "unused"),
+        owner: "unused",
+        agentDir,
+        thinking: "off",
+        executionCwd: cwd,
+      });
+    await assert.rejects(
+      run("chosen/missing", () => models),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /Available models: chosen\/model-0, chosen\/model-1/);
+        assert.doesNotMatch(error.message, /other\/model-other|chosen\/model-8/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      run("unknown/missing", () => other),
+      /Available models: other\/model-other/,
+    );
+    for (const available of [undefined, () => []]) {
+      await assert.rejects(run("chosen/missing", available), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /Omit model to inherit the session or Overseer default/);
+        assert.doesNotMatch(error.message, /Available models:/);
+        return true;
+      });
+    }
+  },
+);
 
 nodeTest(
   "official Pi without a managed host attaches the current process at session_start",

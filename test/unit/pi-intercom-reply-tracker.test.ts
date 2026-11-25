@@ -1,8 +1,11 @@
 import "../support/isolated-home.ts";
 import { test as nodeTest } from "node:test";
 import assert from "node:assert/strict";
+import { askFailure, replyFailure, sendFailure } from "../../src/pi-intercom/outbound-results.ts";
 import { ReplyTracker } from "../../src/pi-intercom/reply-tracker.ts";
+import { RecoveryError } from "../../src/pi-intercom/tool-results.ts";
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
+import { textAt } from "../support/assertions.ts";
 
 function createSession(id: string, name: string): SessionInfo {
   return {
@@ -21,6 +24,53 @@ function createMessage(id: string, text: string, expectsReply = true): Message {
     content: { text },
   };
 }
+
+nodeTest("outbound errors show their next action in model-visible text", () => {
+  const tracker = new ReplyTracker();
+  assert.throws(
+    () => tracker.resolveReplyTarget({}),
+    (error: unknown) => {
+      const result = replyFailure(error, undefined, { kind: "not-sent" });
+      assert.equal(result.isError, true);
+      assert.match(textAt(result.content), /Run `intercom` with `action: "pending"`/);
+      assert.match(
+        textAt(result.content),
+        /Use send with an explicit recipient when there is no inbound ask to reply to/,
+      );
+      assert.deepEqual(result.details, {
+        error: true,
+        reasonCode: "no_pending_reply",
+        deliveryUnknown: false,
+        accepted: false,
+        delivered: false,
+        nextActions: [
+          { action: "pending" },
+          {
+            action: "send",
+            guidance:
+              "Use send with an explicit recipient when there is no inbound ask to reply to.",
+          },
+        ],
+      });
+      return true;
+    },
+  );
+  const failed = sendFailure(new Error("Connection closed"), { kind: "unconfirmed" });
+  assert.match(textAt(failed.content), /Run `intercom` with `action: "list"`/);
+  assert.match(textAt(failed.content), /Check the recipient before retrying.*may still arrive/);
+  assert.equal(failed.details?.deliveryUnknown, true);
+
+  const timeout = askFailure(new RecoveryError("reply_timeout", "Timed out"), {
+    to: "planner",
+    questionId: "ask-1",
+    progress: {
+      kind: "acknowledged",
+      result: { id: "ask-1", accepted: true, delivered: true },
+    },
+  });
+  assert.match(textAt(timeout.content), /The original ask was accepted\. Check the recipient/);
+  assert.equal(timeout.details?.reasonCode, "reply_timeout");
+});
 
 nodeTest("reply resolves from current triggered message context", () => {
   const tracker = new ReplyTracker();

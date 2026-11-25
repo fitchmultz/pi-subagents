@@ -3,6 +3,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { THINKING_LEVELS } from "./contracts.ts";
 import { renderCompactResult } from "../shared/compact-cards.ts";
+import { isRecord } from "../shared/unknown.ts";
 
 // Main-session tool parameters only; the detached runner must not load pi-ai values.
 export const delegateSchema = Type.Object(
@@ -58,23 +59,40 @@ export type RunsInput = Static<typeof runsSchema>;
  */
 export const runsOutputSchema = Type.String();
 
+function prepareDelegateArguments(args: unknown): unknown {
+  if (!isRecord(args) || (args.model !== "null" && args.thinking !== "null")) {
+    return args;
+  }
+  const prepared = { ...args };
+  if (prepared.model === "null") {
+    delete prepared.model;
+  }
+  if (prepared.thinking === "null") {
+    delete prepared.thinking;
+  }
+  return prepared;
+}
+
 export function registerAgentTools(
   pi: ExtensionAPI,
   child: boolean,
   executeDelegate: ToolDefinition<typeof delegateSchema>["execute"],
   executeRuns: ToolDefinition<typeof runsSchema>["execute"],
 ): void {
-  pi.registerTool({
+  // The hook returns raw input; Pi validates it with delegateSchema before calling executeDelegate.
+  const delegateTool: ToolDefinition = {
     name: "delegate",
     label: "Delegate",
     description:
       "Run a child on exactly this prompt; main sessions only. Fork copies the full conversation; default is fresh. Pass readOnly: true to disable edit tools for recon/review. Returns a receipt; completion is notified later: do other work or end the turn, don't poll.",
     parameters: delegateSchema,
+    prepareArguments: prepareDelegateArguments,
     constrainedSampling: { type: "json_schema", strict: "prefer" },
     exposure: child ? "hidden" : "direct",
     renderResult: renderCompactResult,
     execute: executeDelegate,
-  });
+  };
+  pi.registerTool(delegateTool);
   pi.registerTool({
     name: "agent_runs",
     label: "Agent runs",

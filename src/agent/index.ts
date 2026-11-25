@@ -52,6 +52,9 @@ import { OverseerController } from "./overseer.ts";
 import { attachParentSkeptic } from "./overseer-parent-skeptic.ts";
 import { resolveActiveEscalation } from "./overseer-pause.ts";
 
+const CONTINUE_PROMPT_REQUIRED =
+  'continue requires the entire new prompt. Pass prompt or use action: "inspect" to check whether the run is paused at a checkpoint.';
+
 class AgentRuntime {
   private attachment: AttachmentState = { kind: "detached" };
   private readonly reporter = new BackgroundReporter(() => this.ctx);
@@ -339,9 +342,7 @@ class AgentRuntime {
       }
     }
     if (prompt === undefined) {
-      throw new Error(
-        "continue requires the entire new prompt (only paused checkpoints may omit prompt).",
-      );
+      throw new Error(CONTINUE_PROMPT_REQUIRED);
     }
     const command = enqueue(this.base, launch, { action: "steer", prompt });
     return renderReceipt(this.base, launch, this.ctx, {
@@ -357,7 +358,7 @@ class AgentRuntime {
     const state = readRunState(this.base, launch);
     if (state.kind === "saved-unadmitted") {
       if (input.prompt === undefined) {
-        throw new Error("continue requires the entire new prompt.");
+        throw new Error(CONTINUE_PROMPT_REQUIRED);
       }
       return this.retryContinuation(launch, input);
     }
@@ -366,7 +367,7 @@ class AgentRuntime {
       return this.continueLiveGuidance(launch, input.prompt);
     }
     if (input.prompt === undefined) {
-      throw new Error("continue requires the entire new prompt.");
+      throw new Error(CONTINUE_PROMPT_REQUIRED);
     }
     parkFailure(this.base, launch);
     const next = successor(this.base, launch, input.prompt, {

@@ -13,7 +13,8 @@ export interface LaunchContext {
   readonly cwd: string;
   readonly isProjectTrusted: () => boolean;
   readonly model: ExtensionContext["model"];
-  readonly modelRegistry: Pick<ExtensionContext["modelRegistry"], "find" | "getAll">;
+  readonly modelRegistry: Pick<ExtensionContext["modelRegistry"], "find" | "getAll"> &
+    Partial<Pick<ExtensionContext["modelRegistry"], "getAvailable">>;
   readonly sessionManager: Pick<
     ExtensionContext["sessionManager"],
     "getSessionId" | "getSessionFile" | "getHeader" | "getBranch"
@@ -29,6 +30,18 @@ function selectedThinking(
     throw new Error("thinking conflicts with the model's thinking suffix.");
   }
   return suffix ?? requested ?? inherited;
+}
+
+function modelRecoveryHint(registry: LaunchContext["modelRegistry"], provider: string): string {
+  const available = registry.getAvailable?.() ?? [];
+  const sameProvider = available.filter((model) => model.provider === provider);
+  const suggestions = (sameProvider.length > 0 ? sameProvider : available)
+    .slice(0, 6)
+    .map((model) => `${model.provider}/${model.id}`);
+  const inherit = "Omit model to inherit the session or Overseer default.";
+  return suggestions.length > 0
+    ? `${inherit} Available models: ${suggestions.join(", ")}.`
+    : inherit;
 }
 
 function resolveExplicitModel(
@@ -53,12 +66,14 @@ function resolveExplicitModel(
       () => true,
     );
     if (resolved.status !== "resolved") {
-      throw new Error(`Model ${spec} is unavailable; no fallback was used.`);
+      throw new Error(
+        `Model ${spec} is unavailable; no fallback was used. ${modelRecoveryHint(context.modelRegistry, provider)}`,
+      );
     }
     return { model: resolved.model, suffix: resolved.thinkingLevel };
   }
   throw new Error(
-    `Model ${spec} is unavailable; no fallback was used. Check the provider/model ID. This host supports literal IDs only. If you intended a thinking suffix, update Pi for native thinking-suffix support.`,
+    `Model ${spec} is unavailable; no fallback was used. ${modelRecoveryHint(context.modelRegistry, provider)} This host supports literal IDs only. If you intended a thinking suffix, update Pi for native thinking-suffix support.`,
   );
 }
 

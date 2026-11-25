@@ -79,8 +79,15 @@ function ownedRun(context: ExtensionContext, id: string) {
     throw new Error("Native owner journal identity changed; nothing was launched.");
   }
   const owned = findOwnedRun(journal, id);
-  if (owned?.ownerSessionId !== context.sessionManager.getSessionId()) {
-    throw new Error("Missing saved native owner or foreign legacy run; nothing was launched.");
+  if (owned === undefined) {
+    throw new Error(
+      `Missing saved native owner run; nothing was launched. Requested id: ${JSON.stringify(id)}. Use agent_runs with action: "list" and copy the exact full run UUID.`,
+    );
+  }
+  if (owned.ownerSessionId !== context.sessionManager.getSessionId()) {
+    throw new Error(
+      `Foreign legacy run belongs to another session; this session cannot continue it. Requested id: ${JSON.stringify(id)}.`,
+    );
   }
   assertValid(singleValidator, owned);
   return owned;
