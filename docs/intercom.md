@@ -267,6 +267,8 @@ A failure says whether the message left this device:
 
 "Not sent" is certain: the device answers with one line before the request is
 written to it, and a device that did not answer received nothing.
+Failed `send`, `ask`, and `reply` tool calls append a second line with concrete
+recovery guidance matching `details.nextActions`.
 
 ### Device names
 

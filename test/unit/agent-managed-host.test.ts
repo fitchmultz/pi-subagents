@@ -250,12 +250,17 @@ nodeTest("native delegate and agent_runs tool calls explain how to recover", asy
   );
   assert.match(messages[3] ?? "", /Omit model to inherit the session or Overseer default/);
   assert.match(messages[3] ?? "", /Available models: delegate-recovery\/active-model/);
-  for (const [index, refused] of [shortId, foreignId].entries()) {
-    const message = messages[index + 4] ?? "";
-    assert.match(message, /Missing saved native owner or foreign legacy run; nothing was launched/);
-    assert.ok(message.includes(refused));
-    assert.match(message, /agent_runs with action: "list".*exact full run UUID/);
-  }
+  const missingMessage = messages[4] ?? "";
+  assert.match(missingMessage, /Missing saved native owner run; nothing was launched/);
+  assert.ok(missingMessage.includes(shortId));
+  assert.match(missingMessage, /agent_runs with action: "list".*exact full run UUID/);
+  const foreignMessage = messages[5] ?? "";
+  assert.match(
+    foreignMessage,
+    /Foreign legacy run belongs to another session; this session cannot continue it/,
+  );
+  assert.ok(foreignMessage.includes(foreignId));
+  assert.doesNotMatch(foreignMessage, /action: "list"/);
   assert.match(messages[6] ?? "", /Pass prompt or use action: "inspect".*paused at a checkpoint/);
   assert.deepEqual(list(base), [id]);
 });

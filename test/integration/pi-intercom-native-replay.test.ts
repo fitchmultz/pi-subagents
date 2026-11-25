@@ -4603,19 +4603,30 @@ nodeTest(
     const message = "Are you there?";
 
     // Refused here, before any ssh.
+    const expectedGuidance = (details: Record<string, unknown>): string =>
+      records(details.nextActions)
+        .map((entry) =>
+          typeof entry.guidance === "string"
+            ? entry.guidance
+            : `Run \`intercom\` with \`action: "${text(entry.action)}"\`.`,
+        )
+        .join(" ");
     for (const action of ["send", "ask"]) {
       // One call at a time: each must leave the call log empty.
       const fromChild = await failureOf(
         executeIntercom(child, { action, to: "far-quiet@far", message }),
       );
-      assert.match(
+      assert.equal(
         fromChild.message,
-        /Only a main session reaches other devices\. Ask your main to do it\.$/,
+        `${action === "send" ? "Failed to send" : "Failed"}: Only a main session reaches other devices. Ask your main to do it.\n${expectedGuidance(fromChild.details)}`,
       );
       const self = await failureOf(
         executeIntercom(main, { action, to: "far-quiet@HOME", message }),
       );
-      assert.match(self.message, /"home" is this device\. Use the target "far-quiet"\.$/);
+      assert.equal(
+        self.message,
+        `${action === "send" ? "Failed to send" : "Failed"}: "home" is this device. Use the target "far-quiet".\n${expectedGuidance(self.details)}`,
+      );
     }
     assert.deepEqual(devices.calls(), []);
 
@@ -4644,7 +4655,7 @@ nodeTest(
         const result = await failureOf(executeIntercom(main, { action, to, message }));
         assert.equal(
           result.message,
-          `${action === "send" ? "Failed to send" : "Failed"}: ${reason}`,
+          `${action === "send" ? "Failed to send" : "Failed"}: ${reason}\n${expectedGuidance(result.details)}`,
         );
         assert.deepEqual(
           [result.details.accepted, result.details.delivered, result.details.deliveryUnknown],
@@ -4665,12 +4676,15 @@ nodeTest(
     for (const action of ["send", "ask"]) {
       // One call at a time, so a failure names its own case.
       const short = await failureOf(executeIntercom(main, { action, to: "pi-@far", message }));
+      const [firstLine, guidanceLine, ...extraLines] = short.message.split("\n");
+      assert.deepEqual(extraLines, [], short.message);
       const shown =
         /^(?:Failed to send|Failed): Target "pi-@far" is too short\. Use the displayed target from intercom list, such as far-quiet → (pi-[0-9a-f]{5,})@far\.$/.exec(
-          short.message,
+          firstLine ?? "",
         );
       assert.ok(shown !== null, short.message);
       assert.ok(farPeer.id.startsWith(text(shown[1])), short.message);
+      assert.equal(guidanceLine, expectedGuidance(short.details));
       assert.equal(short.details.reasonCode, "ambiguous_target");
     }
     assert.equal(far.faux.state.callCount, 0, "nothing reached far");
@@ -4681,14 +4695,17 @@ nodeTest(
     const lostSend = await failureOf(
       executeIntercom(main, { action: "send", to: "far-quiet@drop", message }),
     );
-    assert.equal(lostSend.message, `Failed to send: ${unknown}`);
+    assert.equal(
+      lostSend.message,
+      `Failed to send: ${unknown}\n${expectedGuidance(lostSend.details)}`,
+    );
     assert.equal(lostSend.details.deliveryUnknown, true);
     const lostId = text(lostSend.details.messageId);
     await waitFor(() => far.visible(lostId).length === 1, "the unconfirmed message on far");
     const lostAsk = await failureOf(
       executeIntercom(main, { action: "ask", to: "far-quiet@drop", message }),
     );
-    assert.equal(lostAsk.message, `Failed: ${unknown}`);
+    assert.equal(lostAsk.message, `Failed: ${unknown}\n${expectedGuidance(lostAsk.details)}`);
     assert.equal(lostAsk.details.deliveryUnknown, true);
     assert.equal(far.visible(text(lostAsk.details.messageId)).length, 1);
     // The command saw its caller leave and left too, which retires the question on far.
@@ -4699,7 +4716,7 @@ nodeTest(
     );
     assert.equal(
       lostReply.message,
-      "Failed: The ask reached fade, and the connection was lost before a reply came (Connection to fade closed by remote host.).",
+      `Failed: The ask reached fade, and the connection was lost before a reply came (Connection to fade closed by remote host.).\n${expectedGuidance(lostReply.details)}`,
     );
     assert.deepEqual(
       [lostReply.details.accepted, lostReply.details.delivered, lostReply.details.deliveryUnknown],
@@ -4712,7 +4729,10 @@ nodeTest(
     const late = await failureOf(
       executeIntercom(hasty, { action: "ask", to: "far-quiet@far", message }),
     );
-    assert.equal(late.message, 'Failed: No reply from "far-quiet@far" within 1 minute(s)');
+    assert.equal(
+      late.message,
+      `Failed: No reply from "far-quiet@far" within 1 minute(s)\n${expectedGuidance(late.details)}`,
+    );
     assert.equal(late.details.reasonCode, "reply_timeout");
     assert.deepEqual(
       [late.details.accepted, late.details.delivered, late.details.deliveryUnknown],
@@ -4732,7 +4752,11 @@ nodeTest(
     );
     await waitFor(async () => (await listedAsks()) === 1, "the question on far");
     controller.abort();
-    assert.equal((await cancelled).message, "Failed: Cancelled");
+    const cancelledResult = await cancelled;
+    assert.equal(
+      cancelledResult.message,
+      `Failed: Cancelled\n${expectedGuidance(cancelledResult.details)}`,
+    );
     await waitFor(async () => (await listedAsks()) === 0, "the cancelled question retired on far");
     assert.equal(await noPendingAsk(far), true);
     assert.deepEqual([...main.errors, ...hasty.errors, ...child.errors, ...far.errors], []);
