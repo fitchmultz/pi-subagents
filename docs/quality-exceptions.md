@@ -79,8 +79,8 @@ rather than allowing `any` to propagate.
 | `src/agent/observe-layout.ts:18`             | Selected host's TUI root.                                  |
 | `src/agent/observe-layout.ts:20`             | That TUI's layout module.                                  |
 | `src/agent/observe-layout.ts:22`             | That TUI's dispatch module.                                |
-| `.github/scripts/ci-host.mjs:31`             | `common.mjs` from the workflow-pinned automation checkout. |
-| `.github/scripts/ci-host.mjs:36`             | `hosts.mjs` from that same automation checkout.            |
+| `.github/scripts/ci-host.mjs:32`             | `common.mjs` from the workflow-pinned automation checkout. |
+| `.github/scripts/ci-host.mjs:37`             | `hosts.mjs` from that same automation checkout.            |
 | `scripts/package-smoke.mjs:178`              | Installed package's emitted host loader, not source.       |
 | `scripts/package-smoke.mjs:192`              | Installed package's emitted broker launcher.               |
 | `test/support/native-host.ts:13`             | Pi AI companion resolved from the caller-selected SDK.     |
