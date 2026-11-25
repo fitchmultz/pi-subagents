@@ -22,7 +22,7 @@ import { AgyPeer, type AgyHookInput, type AgyHookResponse } from "./peer.ts";
 
 const MAX_CONTROL_LINE_BYTES = 256 * 1024;
 const SOCKET_PROBE_TIMEOUT_MS = 250;
-const CONTROL_RECLAIM_FALLBACK_MS = 5000;
+const CONTROL_RECLAIM_FALLBACK_MS = 1000;
 const SUBAGENT_TRIGGER_TOOLS = new Set(["invoke_subagent", "swarm", "run_workflow"]);
 
 function isControlSocketLive(socketPath: string): Promise<boolean> {
@@ -136,6 +136,7 @@ export class AgyBridgeHub {
   private reclaimTimer: NodeJS.Timeout | null = null;
   private reclaimWatcher: fs.FSWatcher | null = null;
   private reclaiming = false;
+  private reclaimPending = false;
   private closed = false;
 
   constructor(
@@ -162,6 +163,7 @@ export class AgyBridgeHub {
   }
 
   private stopControlReclaim(): void {
+    this.reclaimPending = false;
     if (this.reclaimTimer !== null) {
       clearTimeout(this.reclaimTimer);
       this.reclaimTimer = null;
@@ -181,8 +183,9 @@ export class AgyBridgeHub {
       .catch(() => null)
       .finally(() => {
         this.reclaiming = false;
-        if (this.closed || this.server !== null) {
-          this.stopControlReclaim();
+        if (this.reclaimPending) {
+          this.reclaimPending = false;
+          this.attemptControlReclaim();
         } else {
           this.scheduleReclaimFallback();
         }
@@ -209,7 +212,8 @@ export class AgyBridgeHub {
       const targetName = basename(targetPath);
       try {
         const watcher = fs.watch(dirname(targetPath), { persistent: false }, (_event, filename) => {
-          if (filename === null || filename === targetName) {
+          if (this.reclaimWatcher === watcher && (filename === null || filename === targetName)) {
+            this.reclaimPending ||= this.reclaiming;
             this.attemptControlReclaim();
           }
         });
