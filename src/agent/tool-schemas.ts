@@ -1,4 +1,4 @@
-import { Type, type Static, type TSchema } from "typebox";
+import { Type, type Static } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { THINKING_LEVELS } from "./contracts.ts";
@@ -80,7 +80,7 @@ export function registerAgentTools(
   executeRuns: ToolDefinition<typeof runsSchema>["execute"],
 ): void {
   // The hook returns raw input; Pi validates it with delegateSchema before calling executeDelegate.
-  pi.registerTool<TSchema>({
+  const delegateTool: ToolDefinition = {
     name: "delegate",
     label: "Delegate",
     description:
@@ -91,7 +91,8 @@ export function registerAgentTools(
     exposure: child ? "hidden" : "direct",
     renderResult: renderCompactResult,
     execute: executeDelegate,
-  });
+  };
+  pi.registerTool(delegateTool);
   pi.registerTool({
     name: "agent_runs",
     label: "Agent runs",
