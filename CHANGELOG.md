@@ -2,7 +2,22 @@
 
 ## [Unreleased]
 
+## 0.52.75 - 2026-11-25
+
+<!-- npm-release:unreleased:start -->
+
 - Raise the tested Pi floor to 1.6.1.
+
+<!-- npm-release:unreleased:end -->
+
+- chore: enforce 2-day npm min-release-age cooldown (#502) ([cc68e72](https://github.com/fitchmultz/pi-subagents/commit/cc68e72719cd456e01e4520105270332fe8af9f5))
+
+### What's Changed
+
+- chore: enforce 2-day npm min-release-age cooldown by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/502
+- chore: raise Pi floor to 1.6.1 (PEA-238) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/503
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.74...v0.52.75
 
 ## 0.52.74 - 2026-11-24
 
