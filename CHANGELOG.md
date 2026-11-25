@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.77 - 2026-11-25
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix(intercom): restore 5s Agy reclaim fallback interval (PSA-215) (#505) ([08ff11e](https://github.com/fitchmultz/pi-subagents/commit/08ff11e51853183ccf25615f61a0e74d06536528))
+
+### What's Changed
+
+- fix(intercom): restore 5s Agy reclaim fallback interval (PSA-215) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/505
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.76...v0.52.77
+
 ## 0.52.76 - 2026-11-25
 
 <!-- npm-release:unreleased:start -->
