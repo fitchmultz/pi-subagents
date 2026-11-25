@@ -15,6 +15,8 @@ import { loadSDK, packageRoot, runtimeEntry } from "../../src/agent/host.ts";
 import { assertValid } from "../../src/shared/schema.ts";
 import { isRecord } from "../../src/shared/unknown.ts";
 
+const GEMINI_APIS = ["google-generative-ai", "google-interactions"];
+
 const capturedRequestValidator = compile(
   obj(
     {
@@ -74,19 +76,25 @@ export default function fixture(pi) {
     return fauxAssistantMessage("DONE");
   };
 
-  const geminiCore = createFauxCore({
-    api: "google-generative-ai",
-    provider: "fork-cache-google",
-    models: [{ id: "gemini-4-neon", reasoning: true }],
-  });
-  const geminiProvider = createProvider({
-    id: geminiCore.provider,
-    auth: { apiKey: { name: "Faux", resolve: async () => ({ auth: {} }) } },
-    models: geminiCore.models,
-    api: { stream: geminiCore.stream, streamSimple: geminiCore.streamSimple },
-  });
-  geminiCore.setResponses([makeResponder(), makeResponder(), makeResponder()]);
-  pi.registerProvider(geminiProvider);
+  for (const api of ${JSON.stringify(GEMINI_APIS)}) {
+    const geminiCore = createFauxCore({
+      api,
+      provider: "fork-cache-" + api,
+      models: [{ id: "gemini-4-neon", reasoning: true }],
+    });
+    const geminiProvider = createProvider({
+      id: geminiCore.provider,
+      auth: { apiKey: { name: "Faux", resolve: async () => ({ auth: {} }) } },
+      // These flags would allow inline changes in the fallback if the API weren't excluded.
+      models: geminiCore.models.map((m) => ({
+        ...m,
+        compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true },
+      })),
+      api: { stream: geminiCore.stream, streamSimple: geminiCore.streamSimple },
+    });
+    geminiCore.setResponses([makeResponder(), makeResponder(), makeResponder()]);
+    pi.registerProvider(geminiProvider);
+  }
 
   const claudeCore = createFauxCore({
     api: "anthropic-messages",
@@ -389,12 +397,11 @@ async function runChildScenario(
 }
 
 nodeDescribe("child-runtime fork prompt-cache tool preservation", () => {
-  nodeIt(
-    "preserves parent delegate/agent_runs and deferred tools on Gemini 4 fork while honoring hidden denies and blocking guarded calls",
-    async (t) => {
+  for (const api of GEMINI_APIS) {
+    nodeIt(`preserves parent tools and blocks guarded calls on a ${api} fork`, async (t) => {
       const result = await runChildScenario(t, {
         context: "fork",
-        provider: "fork-cache-google",
+        provider: `fork-cache-${api}`,
         model: "gemini-4-neon",
         prompt: "TRY_DELEGATE_AND_RUNS",
       });
@@ -435,15 +442,15 @@ nodeDescribe("child-runtime fork prompt-cache tool preservation", () => {
         JSON.stringify(runsResult.content),
         /Only (?:a main session|main sessions) may delegate/u,
       );
-    },
-  );
+    });
+  }
 
   nodeIt(
     "keeps fresh children hiding delegate/agent_runs and applying subagents.toolExposure",
     async (t) => {
       const result = await runChildScenario(t, {
         context: "fresh",
-        provider: "fork-cache-google",
+        provider: "fork-cache-google-generative-ai",
         model: "gemini-4-neon",
         prompt: "FRESH_TURN",
       });
