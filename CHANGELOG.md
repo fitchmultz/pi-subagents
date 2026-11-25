@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.76 - 2026-11-25
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix(intercom): retain Agy socket reclaim notifications (#504) ([d0a98df](https://github.com/fitchmultz/pi-subagents/commit/d0a98df1f152de7c0ce5e0b86b631611c24c0f09))
+
+### What's Changed
+
+- Fix Agy control socket reclaim race by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/504
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.75...v0.52.76
+
 ## 0.52.75 - 2026-11-25
 
 <!-- npm-release:unreleased:start -->
