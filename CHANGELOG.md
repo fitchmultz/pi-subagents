@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.80 - 2026-11-27
+
+<!-- npm-release:unreleased:start -->
+
 - Raise the tested Pi floor and the locked development Pi packages and `pi-schema` dependency to 1.7.0.
+
+<!-- npm-release:unreleased:end -->
+
+- chore: raise Pi floor to 1.7.0 (PEA-240) (#508) ([4fde8e1](https://github.com/fitchmultz/pi-subagents/commit/4fde8e13aefd44c50df29d0403bcc695c864b290))
+
+### What's Changed
+
+- chore: raise Pi floor to 1.7.0 (PEA-240) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/508
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.79...v0.52.80
 
 ## 0.52.79 - 2026-11-25
 
