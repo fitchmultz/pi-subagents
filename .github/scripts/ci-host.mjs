@@ -12,7 +12,7 @@ import { isRecord } from "../../src/shared/unknown.ts";
 const [flavor, target, automationArg, sourceArg] = process.argv.slice(2);
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
-    "Usage: node .github/scripts/ci-host.mjs official|fork VERSION|FORK_PACKAGE AUTOMATION SOURCE\n\nQualifies the once-resolved host with the full package contract and production Git/native install.\nEnvironment: PI_EDITOR_RECEIPT_TEST_ROOT selects the frozen editor checkout. PI_RELEASE_CANDIDATE optionally selects the verified candidate artifact directory; fork qualification also requires PI_RELEASE_FORK to select its prepared host artifact.\nExample: PI_EDITOR_RECEIPT_TEST_ROOT=editor node .github/scripts/ci-host.mjs official 1.0.2 automation extension\nExit codes: 0 passed; 1 invalid input or failed check.",
+    "Usage: node .github/scripts/ci-host.mjs official|fork VERSION|FORK_PACKAGE AUTOMATION SOURCE\n\nQualifies the once-resolved host with the full package contract and production Git/native install.\nEnvironment: PI_EDITOR_RECEIPT_TEST_ROOT selects the frozen editor checkout. PI_RELEASE_CANDIDATE optionally selects the verified candidate artifact directory; fork qualification also requires PI_RELEASE_FORK to select its prepared host artifact.\nExample: PI_EDITOR_RECEIPT_TEST_ROOT=editor node .github/scripts/ci-host.mjs official 1.7.0 automation extension\nExit codes: 0 passed; 1 invalid input or failed check.",
   );
   process.exit(0);
 }
@@ -71,8 +71,8 @@ try {
   }
   const version = semver.coerce(host.version);
   assert.ok(
-    version !== null && semver.gte(version, "1.6.1"),
-    "Resolved latest host is below the supported 1.6.1 floor",
+    version !== null && semver.gte(version, "1.7.0"),
+    "Resolved latest host is below the supported 1.7.0 floor",
   );
   const selected = selectDevelopmentHost(development, host, env);
   const testEnv = {

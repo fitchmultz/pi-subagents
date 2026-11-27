@@ -192,9 +192,10 @@ jobs:
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npm run hydrate:model-data
-          PI_OFFLINE=1 PI_TELEMETRY=0 npm run build:offline
+          PI_OFFLINE=1 npm run build:offline
           node ../automation/scripts/pack-fork.mjs . "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"
           git diff --exit-code
+      # ci-host.mjs uses the checkout's semver dependency to enforce the Pi 1.7.0 floor.
       - name: Install host qualification script dependencies
         working-directory: extension
         run: npm ci --ignore-scripts

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Raise the tested Pi floor and the locked development Pi packages and `pi-schema` dependency to 1.7.0.
+
 ## 0.52.79 - 2026-11-25
 
 <!-- npm-release:unreleased:start -->
