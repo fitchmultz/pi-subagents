@@ -53,7 +53,6 @@ Object.assign(process.env, {
   PI_CODING_AGENT_DIR: agentDir,
   PI_INTERCOM_RUNTIME_DIR: join(root, "ic"),
   PI_OFFLINE: "1",
-  PI_TELEMETRY: "0",
   PI_PACKAGE_DIR: hostRoot,
 });
 let networkAttempts = 0;

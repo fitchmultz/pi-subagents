@@ -73,7 +73,6 @@ export default function(pi) {
         PI_CODING_AGENT_DIR: join(root, "agent"),
         PI_INTERCOM_RUNTIME_DIR: join(root, "ic"),
         PI_OFFLINE: "1",
-        PI_TELEMETRY: "0",
         JITI_FS_CACHE: join(root, "jiti"),
       },
       encoding: "utf8",

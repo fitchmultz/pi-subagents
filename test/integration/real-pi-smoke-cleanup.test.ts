@@ -77,7 +77,6 @@ function startSmoke(
         PI_REAL_SMOKE_AUTH_AGENT_DIR: auth,
         PI_REAL_SMOKE_MODEL: "fixture/smoke",
         PI_OFFLINE: "1",
-        PI_TELEMETRY: "0",
         SMOKE_CLEANUP_EVIDENCE: root,
         SMOKE_CLEANUP_SCENARIO: scenario,
       },

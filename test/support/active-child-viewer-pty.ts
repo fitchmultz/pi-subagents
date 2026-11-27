@@ -173,7 +173,6 @@ class Proof {
       PI_SUBAGENT_TEMP_ROOT: path.join(opts.output, "pi-subagents-temp"),
       PI_OFFLINE: "1",
       PI_SKIP_VERSION_CHECK: "1",
-      PI_TELEMETRY: "0",
       OBSERVE_TEST_ROOT: opts.output,
     };
     this.save("environment.json", this.env);
